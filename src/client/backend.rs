@@ -4,20 +4,21 @@ use crossbeam::select;
 use crossbeam::thread;
 use std::io::BufRead;
 use std::io::BufReader;
+use std::io::ErrorKind;
 use std::io::Read;
 use std::io::Write;
 use std::mem::Discriminant;
 use std::net::TcpStream;
 use std::os::unix::net::UnixStream;
+use std::sync::Arc;
 use std::time::Duration;
 
 type Result<T> = std::result::Result<T, anyhow::Error>;
 
-mod mpv_data_model;
-mod network_data_model;
+use crate::mpv_data_model::*;
+use video_sync::*;
 
-use mpv_data_model::*;
-use network_data_model::*;
+use crate::Config;
 
 fn mpv_socket_loop<S: Read>(
     mpv_events: Sender<MpvResponseOrEvent>,
@@ -255,9 +256,23 @@ fn broker_loop(
     }
 }
 
-fn run() -> Result<()> {
-    let ipc_socket_path = std::env::args().nth(1).unwrap();
-    let mut ipc_stream = UnixStream::connect(ipc_socket_path)?;
+pub fn start_backend(config: Arc<Config>) -> Result<()> {
+
+    let mut ipc_stream = loop {
+
+        let stream = UnixStream::connect(&config.ipc_socket);
+
+        match stream {
+            Ok(stream) => break stream,
+            Err(e) => match e.kind() {
+                ErrorKind::ConnectionRefused => {},
+                _ => Err(e)?,
+            }
+        }
+
+        std::thread::sleep(Duration::from_millis(100));
+    };
+
     println!("Connected to mpv socket!");
 
     let speed_change = MpvCommand::ObserveProperty {
@@ -265,11 +280,10 @@ fn run() -> Result<()> {
         id: 1,
         property: MpvProperty::Speed,
     };
-    serde_json::to_writer(&ipc_stream, &speed_change.to_json_command())?;
+    serde_json::to_writer(&ipc_stream, &speed_change.to_json_command()).unwrap();
     ipc_stream.write(b"\n")?;
 
-    let network_path = std::env::args().nth(2).unwrap();
-    let network_stream = TcpStream::connect(network_path)?;
+    let network_stream = TcpStream::connect(&config.network_url).unwrap();
     println!("Connected to network!");
 
     thread::scope(|s| -> Result<()> {
@@ -289,13 +303,10 @@ fn run() -> Result<()> {
         mpv_listener_handle.join().unwrap()?;
         network_listener_handle.join().unwrap()?;
         broker_handle.join().unwrap()?;
+
         Ok(())
     })
     .unwrap()?;
 
     Ok(())
-}
-
-fn main() {
-    run().unwrap();
 }

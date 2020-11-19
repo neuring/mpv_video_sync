@@ -9,13 +9,12 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 
-mod network_data_model;
-
 use crossbeam::channel;
 use crossbeam::channel::Receiver;
 use crossbeam::channel::Sender;
 use crossbeam::thread;
-use network_data_model::*;
+
+use video_sync::*;
 
 type Result<T> = std::result::Result<T, anyhow::Error>;
 
@@ -91,19 +90,20 @@ fn data_loop(commands: Receiver<Command>) -> Result<()> {
                 }
             },
             Command::Synchronize => {
-                println!("Synchronizing...");
-                let iter = connections.iter()
-                    .filter_map(|(_, &Connection { timestamp, .. })| Some(timestamp?.value))
+                let iter = connections
+                    .iter()
+                    .filter_map(|(_, &Connection { timestamp, .. })| {
+                        Some(timestamp?.value)
+                    })
                     .filter(|v| !v.is_nan());
                 let min = iter.clone().min_by(|a, b| a.partial_cmp(b).unwrap());
                 let max = iter.max_by(|a, b| a.partial_cmp(b).unwrap());
 
-
                 if let (Some(min), Some(max)) = (min, max) {
                     if max - min > 5. {
                         println!("Synchronizing to necessary ({}, {})!", min, max);
-                        let payload = ClientMessage::Seek { time : min};
-                        for (_, Connection {stream, ..} ) in connections.iter() {
+                        let payload = ClientMessage::Seek { time: min };
+                        for (_, Connection { stream, .. }) in connections.iter() {
                             serde_json::to_writer(&**stream, &payload)?;
                             (&**stream).write(b"\n")?;
                         }
