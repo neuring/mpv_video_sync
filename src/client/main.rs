@@ -1,12 +1,11 @@
 use std::ffi::OsString;
-use std::net::SocketAddr;
-use std::net::ToSocketAddrs;
 use std::path::PathBuf;
 use std::process::Command;
 use std::process::Stdio;
 use std::str::FromStr;
 use std::sync::Arc;
 
+use async_std::task;
 use structopt::StructOpt;
 
 mod backend;
@@ -32,30 +31,10 @@ impl FromStr for MpvProcessInvocation {
     }
 }
 
-#[derive(Debug)]
-pub struct SocketAddrs(Vec<std::net::SocketAddr>);
-
-impl FromStr for SocketAddrs {
-    type Err = anyhow::Error;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let addrs = s.to_socket_addrs()?.collect();
-        Ok(Self(addrs))
-    }
-}
-
-impl<'a> ToSocketAddrs for &'a SocketAddrs {
-    type Iter = std::iter::Cloned<std::slice::Iter<'a, SocketAddr>>;
-
-    fn to_socket_addrs(&self) -> std::io::Result<Self::Iter> {
-        Ok(self.0.iter().cloned())
-    }
-}
-
 #[derive(Debug, StructOpt)]
 pub struct Config {
     /// URL of synchronizing server.
-    network_url: SocketAddrs,
+    network_url: String,
 
     /// Path to video which to play.
     video_path: PathBuf,
@@ -82,6 +61,7 @@ fn main() {
 
     command
         .args(&config.mpv_command.flags)
+        .arg("--keep-open=always")
         .arg(mpv_ipc_flag)
         .arg(&config.video_path)
         .stdout(Stdio::null())
@@ -89,7 +69,11 @@ fn main() {
 
     let mut handle = command.spawn().expect("Couldn't start mpv");
 
-    std::thread::spawn(|| backend::start_backend(Arc::new(config)).unwrap());
+    std::thread::spawn(|| {
+        task::block_on(async {
+            backend::start_backend(Arc::new(config)).await.unwrap()
+        })
+    });
 
     let status = handle.wait().unwrap();
     //TODO: implement clean shutdown, by sending a signal to all running threads, somehow...

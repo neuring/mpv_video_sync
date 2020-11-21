@@ -1,15 +1,16 @@
-use crossbeam::channel::Sender;
-use crossbeam::channel::{self, Receiver};
-use crossbeam::select;
-use crossbeam::thread;
-use std::io::BufRead;
-use std::io::BufReader;
+use async_std::io::BufReader;
+use async_std::net::TcpStream;
+use async_std::os::unix::net::UnixStream;
+use async_std::prelude::*;
+use async_std::task;
+use futures::channel::mpsc;
+use futures::channel::mpsc::UnboundedReceiver as Receiver;
+use futures::channel::mpsc::UnboundedSender as Sender;
+use futures::select;
+use futures::FutureExt;
+use futures::SinkExt;
 use std::io::ErrorKind;
-use std::io::Read;
-use std::io::Write;
 use std::mem::Discriminant;
-use std::net::TcpStream;
-use std::os::unix::net::UnixStream;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -20,15 +21,16 @@ use video_sync::*;
 
 use crate::Config;
 
-fn mpv_socket_loop<S: Read>(
-    mpv_events: Sender<MpvResponseOrEvent>,
-    socket: S,
+async fn mpv_socket_loop(
+    mut mpv_events: Sender<MpvResponseOrEvent>,
+    socket: &UnixStream,
 ) -> Result<()> {
     let reader = BufReader::new(socket);
+    let mut lines = reader.lines();
 
     println!("Listening to mpv ...");
-    for line in reader.lines() {
-        let line = line?;
+    while let Some(line) = lines.next().await {
+        let line: String = line?;
 
         let response: MpvResponseOrEvent = match serde_json::from_str(&line.trim()) {
             Ok(response) => response,
@@ -46,27 +48,28 @@ fn mpv_socket_loop<S: Read>(
                 println!("{: <10}--> {:?}", "MPV-RESP", response);
             }
         };
-        mpv_events.send(response)?;
+        mpv_events.send(response).await?;
     }
 
     Ok(())
 }
 
-fn network_loop(
-    network_events: Sender<ClientMessage>,
+async fn network_loop(
+    mut network_events: Sender<ClientMessage>,
     network_socket: &TcpStream,
 ) -> Result<()> {
     let network = BufReader::new(network_socket);
+    let mut lines = network.lines();
 
     println!("Listening to network...");
-    for line in network.lines() {
-        let line = line?;
+    while let Some(line) = lines.next().await {
+        let line: String = line?;
 
         println!("{: <10}--> {:?}", "NETWORK", line);
 
         let msg = serde_json::from_str(&line)?;
 
-        network_events.send(msg)?;
+        network_events.send(msg).await?;
     }
 
     Ok(())
@@ -82,13 +85,16 @@ enum Command {
     Seek,
 }
 
-fn request_time_pos(mut mpv_stream: impl Write) -> Result<()> {
+async fn request_time_pos(mut mpv_stream: &UnixStream) -> Result<()> {
     let cmd = MpvCommand::GetProperty {
         property: MpvProperty::TimePos,
         request_id: TIMER_REQUEST_ID,
     };
-    mpv_stream.write_all(cmd.to_json_command().to_string().as_bytes())?;
-    mpv_stream.write(b"\n")?;
+    println!("{: <10}<-- {:?}", "MPV", cmd);
+    mpv_stream
+        .write_all(cmd.to_json_command().to_string().as_bytes())
+        .await?;
+    mpv_stream.write(b"\n").await?;
     Ok(())
 }
 
@@ -96,12 +102,12 @@ fn request_time_pos(mut mpv_stream: impl Write) -> Result<()> {
 struct BrokerResponseState {
     command_waiting_for_time: Option<Command>,
     last_event: Option<Command>, // MPV fires the Pause and Unpause events twice.
-                                 // We avoid sending these messages twice over the
-                                 // network by filtering with help of this field.
+    // We avoid sending these messages twice over the
+    // network by filtering with help of this field.
     last_network_command: Option<Discriminant<ClientMessage>>,
 }
 
-fn broker_handle_mpv_event(
+async fn broker_handle_mpv_event(
     event: MpvResponseOrEvent,
     mpv_stream: &UnixStream,
     mut network_stream: &TcpStream,
@@ -131,8 +137,11 @@ fn broker_handle_mpv_event(
 
             response_state.command_waiting_for_time = None;
 
-            serde_json::to_writer(network_stream, &payload)?;
-            network_stream.write(b"\n")?;
+            println!("{: <10}<-- {:?}", "NETWORK", payload);
+
+            let payload = serde_json::to_string(&payload)?;
+            network_stream.write_all(payload.as_bytes()).await?;
+            network_stream.write(b"\n").await?;
         }
 
         MpvResponseOrEvent::Event(MpvEvent::PropertyChange {
@@ -140,36 +149,44 @@ fn broker_handle_mpv_event(
             name: MpvPropertyValue::Speed(factor),
         }) => {
             let payload = ClientMessage::SpeedChange { factor };
+            println!("{: <10}<-- {:?}", "NETWORK", payload);
 
-            serde_json::to_writer(network_stream, &payload)?;
-            network_stream.write(b"\n")?;
+            let payload = serde_json::to_string(&payload)?;
+            network_stream.write_all(payload.as_bytes()).await?;
+            network_stream.write(b"\n").await?;
         }
 
         MpvResponseOrEvent::Event(MpvEvent::Pause) => {
-            if let Some(Command::Pause) = response_state.last_event { return Ok(()) }
+            if let Some(Command::Pause) = response_state.last_event {
+                return Ok(());
+            }
             response_state.last_event = Some(Command::Pause);
 
             response_state.command_waiting_for_time = Some(Command::Pause);
-            request_time_pos(mpv_stream)?;
+            request_time_pos(mpv_stream).await?;
         }
 
         MpvResponseOrEvent::Event(MpvEvent::Unpause) => {
-            if let Some(Command::Resume) = response_state.last_event { return Ok(()) }
+            if let Some(Command::Resume) = response_state.last_event {
+                return Ok(());
+            }
             response_state.last_event = Some(Command::Resume);
 
             response_state.command_waiting_for_time = Some(Command::Resume);
-            request_time_pos(mpv_stream)?;
+            request_time_pos(mpv_stream).await?;
         }
 
         MpvResponseOrEvent::Event(MpvEvent::Seek) => {
             if let Some(discriminant) = response_state.last_network_command {
-                if discriminant == std::mem::discriminant(&ClientMessage::Seek{ time: 0.0 }) {
+                if discriminant
+                    == std::mem::discriminant(&ClientMessage::Seek { time: 0.0 })
+                {
                     response_state.last_network_command = None;
                     return Ok(());
                 }
             }
             response_state.command_waiting_for_time = Some(Command::Seek);
-            request_time_pos(mpv_stream)?;
+            request_time_pos(mpv_stream).await?;
         }
 
         _ => {
@@ -179,7 +196,7 @@ fn broker_handle_mpv_event(
     Ok(())
 }
 
-fn broker_handle_network_event(
+async fn broker_handle_network_event(
     event: ClientMessage,
     mut mpv_stream: &UnixStream,
     response_state: &mut BrokerResponseState,
@@ -215,8 +232,10 @@ fn broker_handle_network_event(
     response_state.last_network_command = Some(std::mem::discriminant(&event));
 
     if let Some(action) = action {
-        serde_json::to_writer(mpv_stream, &action.to_json_command())?;
-        mpv_stream.write(b"\n")?;
+        println!("{: <10}<-- {:?}", "MPV", action);
+        let payload = serde_json::to_string(&action.to_json_command())?;
+        mpv_stream.write_all(payload.as_bytes()).await?;
+        mpv_stream.write(b"\n").await?;
     }
 
     if let Some(time) = time {
@@ -224,53 +243,64 @@ fn broker_handle_network_event(
             request_id: 1,
             property: MpvPropertyValue::TimePos(time),
         };
-        serde_json::to_writer(mpv_stream, &time_payload.to_json_command())?;
-        mpv_stream.write(b"\n")?;
+        println!("{: <10}<-- {:?}", "MPV", time_payload);
+        let payload = serde_json::to_string(&time_payload.to_json_command())?;
+        mpv_stream.write_all(payload.as_bytes()).await?;
+        mpv_stream.write(b"\n").await?;
     }
 
     Ok(())
 }
 
-fn broker_loop(
+async fn broker_loop(
     mpv_events: Receiver<MpvResponseOrEvent>,
     network_events: Receiver<ClientMessage>,
-    mut mpv_stream: &UnixStream,
-    mut network_stream: &TcpStream,
+    mpv_stream: &UnixStream,
+    network_stream: &TcpStream,
 ) -> Result<()> {
     let mut response_state = BrokerResponseState::default();
+    let mut mpv_events = mpv_events.fuse();
+    let mut network_events = network_events.fuse();
 
     loop {
         select! {
-            recv(mpv_events) -> event => {
-                let event = event?;
-                broker_handle_mpv_event(event, &mut mpv_stream, &mut network_stream, &mut response_state)?;
+            mpv_event = mpv_events.next().fuse() => {
+                if let Some(event) = mpv_event {
+                    broker_handle_mpv_event(
+                        event,
+                        mpv_stream,
+                        network_stream,
+                        &mut response_state
+                    ).await?;
+                }
             },
-            recv(network_events) -> event => {
-                let event = event?;
-                broker_handle_network_event(event, &mut mpv_stream, &mut response_state)?;
-            }
-            default(Duration::from_millis(2000)) => {
-                request_time_pos(&mut mpv_stream)?;
-            }
-        };
+
+            network_event = network_events.next().fuse() => {
+                if let Some(event) = network_event {
+                    broker_handle_network_event(event, mpv_stream, &mut response_state).await?;
+                }
+            },
+
+            _ = task::sleep(Duration::from_millis(2000)).fuse() => {
+                request_time_pos(mpv_stream).await?;
+            },
+        }
     }
 }
 
-pub fn start_backend(config: Arc<Config>) -> Result<()> {
-
+pub async fn start_backend(config: Arc<Config>) -> Result<()> {
     let mut ipc_stream = loop {
-
-        let stream = UnixStream::connect(&config.ipc_socket);
+        let stream = UnixStream::connect(&config.ipc_socket).await;
 
         match stream {
             Ok(stream) => break stream,
             Err(e) => match e.kind() {
-                ErrorKind::ConnectionRefused => {},
+                ErrorKind::ConnectionRefused => {}
                 _ => Err(e)?,
-            }
+            },
         }
 
-        std::thread::sleep(Duration::from_millis(100));
+        task::sleep(Duration::from_millis(100)).await;
     };
 
     println!("Connected to mpv socket!");
@@ -280,33 +310,30 @@ pub fn start_backend(config: Arc<Config>) -> Result<()> {
         id: 1,
         property: MpvProperty::Speed,
     };
-    serde_json::to_writer(&ipc_stream, &speed_change.to_json_command()).unwrap();
-    ipc_stream.write(b"\n")?;
 
-    let network_stream = TcpStream::connect(&config.network_url).unwrap();
+    let payload = serde_json::to_string(&speed_change.to_json_command()).unwrap();
+    ipc_stream.write_all(payload.as_bytes()).await?;
+    ipc_stream.write(b"\n").await?;
+
+    let network_stream = TcpStream::connect(&config.network_url).await.unwrap();
     println!("Connected to network!");
 
-    thread::scope(|s| -> Result<()> {
-        let (mpv_sender, mpv_receiver) = channel::unbounded();
-        let (network_sender, network_receiver) = channel::unbounded();
+    let (mpv_sender, mpv_receiver) = mpsc::unbounded();
+    let (network_sender, network_receiver) = mpsc::unbounded();
 
-        let mpv_listener_handle =
-            s.spawn(|_| mpv_socket_loop(mpv_sender, &ipc_stream));
+    let mut mpv_listener = mpv_socket_loop(mpv_sender, &ipc_stream).boxed().fuse();
+    let mut network_listener =
+        network_loop(network_sender, &network_stream).boxed().fuse();
+    let mut broker =
+        broker_loop(mpv_receiver, network_receiver, &ipc_stream, &network_stream)
+            .boxed()
+            .fuse();
 
-        let network_listener_handle =
-            s.spawn(|_| network_loop(network_sender, &network_stream));
-
-        let broker_handle = s.spawn(|_| {
-            broker_loop(mpv_receiver, network_receiver, &ipc_stream, &network_stream)
-        });
-
-        mpv_listener_handle.join().unwrap()?;
-        network_listener_handle.join().unwrap()?;
-        broker_handle.join().unwrap()?;
-
-        Ok(())
-    })
-    .unwrap()?;
+    select! {
+        x = mpv_listener => x?,
+        x = network_listener => x?,
+        x = broker => x?,
+    }
 
     Ok(())
 }

@@ -1,4 +1,4 @@
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -96,9 +96,15 @@ impl MpvPropertyValue {
     fn to_cmd_list(&self) -> Vec<serde_json::Value> {
         let p: MpvProperty = (*self).into();
         match *self {
-            MpvPropertyValue::Pause(paused) => vec![p.to_string().into(), paused.into()],
-            MpvPropertyValue::TimePos(time) => vec![p.to_string().into(), time.into()],
-            MpvPropertyValue::Speed(speed) => vec![p.to_string().into(), speed.into()],
+            MpvPropertyValue::Pause(paused) => {
+                vec![p.to_string().into(), paused.into()]
+            }
+            MpvPropertyValue::TimePos(time) => {
+                vec![p.to_string().into(), time.into()]
+            }
+            MpvPropertyValue::Speed(speed) => {
+                vec![p.to_string().into(), speed.into()]
+            }
         }
     }
 }
