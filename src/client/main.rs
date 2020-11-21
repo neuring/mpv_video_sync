@@ -9,7 +9,7 @@ use async_std::task;
 use structopt::StructOpt;
 
 mod backend;
-mod mpv_data_model;
+mod mpv;
 
 #[derive(Debug)]
 struct MpvProcessInvocation {

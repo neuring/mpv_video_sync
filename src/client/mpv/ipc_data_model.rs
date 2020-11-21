@@ -2,25 +2,25 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum MpvCommand {
+pub enum MpvIpcCommand {
     GetProperty {
         request_id: u64,
-        property: MpvProperty,
+        property: MpvIpcProperty,
     },
     SetProperty {
         request_id: u64,
-        property: MpvPropertyValue,
+        property: MpvIpcPropertyValue,
     },
     ObserveProperty {
         request_id: u64,
         id: u64, // not sure what this does
-        property: MpvProperty,
+        property: MpvIpcProperty,
     },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "name", content = "data")]
-pub enum MpvPropertyValue {
+pub enum MpvIpcPropertyValue {
     #[serde(rename = "pause")]
     Pause(bool),
     #[serde(rename = "time-pos")]
@@ -30,7 +30,7 @@ pub enum MpvPropertyValue {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-pub enum MpvProperty {
+pub enum MpvIpcProperty {
     #[serde(rename = "pause")]
     Pause,
     #[serde(rename = "time-pos")]
@@ -39,27 +39,27 @@ pub enum MpvProperty {
     Speed,
 }
 
-impl MpvProperty {
+impl MpvIpcProperty {
     fn to_string(&self) -> &'static str {
         match self {
-            MpvProperty::Pause => "pause",
-            MpvProperty::TimePos => "time-pos",
-            MpvProperty::Speed => "speed",
+            MpvIpcProperty::Pause => "pause",
+            MpvIpcProperty::TimePos => "time-pos",
+            MpvIpcProperty::Speed => "speed",
         }
     }
 }
 
-impl MpvCommand {
+impl MpvIpcCommand {
     pub fn to_json_command(&self) -> serde_json::Value {
         match self {
-            MpvCommand::GetProperty {
+            MpvIpcCommand::GetProperty {
                 request_id,
                 property,
             } => json! ({
                 "command": ["get_property", property.to_string()],
                 "request_id": request_id,
             }),
-            MpvCommand::SetProperty {
+            MpvIpcCommand::SetProperty {
                 request_id,
                 property,
             } => {
@@ -70,7 +70,7 @@ impl MpvCommand {
                     "request_id": request_id,
                 })
             }
-            MpvCommand::ObserveProperty {
+            MpvIpcCommand::ObserveProperty {
                 request_id,
                 id,
                 property,
@@ -82,27 +82,27 @@ impl MpvCommand {
     }
 }
 
-impl From<MpvPropertyValue> for MpvProperty {
-    fn from(val: MpvPropertyValue) -> Self {
+impl From<MpvIpcPropertyValue> for MpvIpcProperty {
+    fn from(val: MpvIpcPropertyValue) -> Self {
         match val {
-            MpvPropertyValue::Pause(_) => MpvProperty::Pause,
-            MpvPropertyValue::TimePos(_) => MpvProperty::TimePos,
-            MpvPropertyValue::Speed(_) => MpvProperty::Speed,
+            MpvIpcPropertyValue::Pause(_) => MpvIpcProperty::Pause,
+            MpvIpcPropertyValue::TimePos(_) => MpvIpcProperty::TimePos,
+            MpvIpcPropertyValue::Speed(_) => MpvIpcProperty::Speed,
         }
     }
 }
 
-impl MpvPropertyValue {
+impl MpvIpcPropertyValue {
     fn to_cmd_list(&self) -> Vec<serde_json::Value> {
-        let p: MpvProperty = (*self).into();
+        let p: MpvIpcProperty = (*self).into();
         match *self {
-            MpvPropertyValue::Pause(paused) => {
+            MpvIpcPropertyValue::Pause(paused) => {
                 vec![p.to_string().into(), paused.into()]
             }
-            MpvPropertyValue::TimePos(time) => {
+            MpvIpcPropertyValue::TimePos(time) => {
                 vec![p.to_string().into(), time.into()]
             }
-            MpvPropertyValue::Speed(speed) => {
+            MpvIpcPropertyValue::Speed(speed) => {
                 vec![p.to_string().into(), speed.into()]
             }
         }
@@ -110,14 +110,14 @@ impl MpvPropertyValue {
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
-pub struct MpvResponse {
+pub struct MpvIpcResponse {
     pub request_id: u64,
-    pub error: MpvErrorStatus,
+    pub error: MpvIpcErrorStatus,
     pub data: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
-pub enum MpvErrorStatus {
+pub enum MpvIpcErrorStatus {
     #[serde(rename = "success")]
     Success,
     #[serde(rename = "invalid parameter")]
@@ -126,12 +126,12 @@ pub enum MpvErrorStatus {
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(tag = "event")]
-pub enum MpvEvent {
+pub enum MpvIpcEvent {
     #[serde(rename = "property-change")]
     PropertyChange {
         id: u64,
         #[serde(flatten)]
-        name: MpvPropertyValue,
+        name: MpvIpcPropertyValue,
     },
     #[serde(rename = "playback-restart")]
     PlaybackRestart,
@@ -145,7 +145,7 @@ pub enum MpvEvent {
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(untagged)]
-pub enum MpvResponseOrEvent {
-    Event(MpvEvent),
-    Response(MpvResponse),
+pub enum MpvIpcResponseOrEvent {
+    Event(MpvIpcEvent),
+    Response(MpvIpcResponse),
 }
