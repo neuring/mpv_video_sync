@@ -125,6 +125,10 @@ async fn broker_loop(
             },
 
             _ = task::sleep(Duration::from_millis(2000)).fuse() => {
+                println!("Requesting time");
+                let time = mpv.request_time().await?;
+                let msg = ClientMessage::Timestamp { time };
+                send_network_message(msg, network_stream).await?;
             },
         }
     }

@@ -1,11 +1,11 @@
 use async_std::io::BufReader;
 use async_std::prelude::*;
 use async_std::sync::Mutex;
-use futures::channel::mpsc::UnboundedSender as Sender;
+use futures::channel::mpsc::{self, UnboundedSender as Sender};
 use futures::SinkExt;
 use std::collections::HashSet;
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use async_std::os::unix::net::UnixStream;
 
 mod ipc_data_model;
@@ -24,7 +24,8 @@ const PAUSE_CHANGE_REQUEST_ID: u64 = 1;
 struct MpvState {
     events_to_be_consumed: Vec<MpvIpcEvent>,
     expected_responses: HashSet<u64>,
-    required_time: Vec<Box<dyn FnOnce(f64) -> MpvEvent + Send + 'static >>,
+    required_time: Vec<Box<dyn FnOnce(f64) -> MpvEvent + Send + 'static>>,
+    time_requests: Vec<Sender<f64>>,
     next_request_id: u64,
 }
 
@@ -34,6 +35,7 @@ impl Default for MpvState {
             events_to_be_consumed: Vec::new(),
             expected_responses: HashSet::new(),
             required_time: Vec::new(),
+            time_requests: Vec::new(),
             next_request_id: TIMER_REQUEST_ID + 1,
         }
     }
@@ -48,7 +50,6 @@ pub enum MpvEvent {
 
 impl Mpv {
     pub async fn new(stream: UnixStream) -> Result<Self> {
-
         let this = Self {
             stream,
             state: Mutex::new(MpvState::default()),
@@ -150,6 +151,10 @@ impl Mpv {
                     for event in state.required_time.drain(..) {
                         sender.send(event(time)).await?;
                     }
+
+                    for mut send in state.time_requests.drain(..) {
+                        send.send(time).await?;
+                    }
                 }
 
                 if state.expected_responses.remove(&response.request_id) {
@@ -238,7 +243,19 @@ impl Mpv {
         Ok(())
     }
 
-    pub async fn request_time(&self) -> f64 {
-        todo!()
+    pub async fn request_time(&self) -> Result<f64> {
+        let (time_sender, mut time_receiver) = mpsc::unbounded();
+
+        let mut state = self.state.lock().await;
+        state.time_requests.push(time_sender);
+        drop(state);
+
+        self.send_time_request().await?;
+
+        let r = time_receiver
+            .next()
+            .await
+            .ok_or(anyhow!("Channel closed before receiving time."))?;
+        Ok(r)
     }
 }
