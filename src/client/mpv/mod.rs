@@ -21,6 +21,8 @@ pub struct Mpv {
 }
 
 const TIMER_REQUEST_ID: u64 = 3;
+const OBSERVE_PAUSE_ID: u64 = 1;
+const OBSERVE_SPEED_ID: u64 = 2;
 
 struct MpvState {
     events_to_be_ignored: Vec<MpvIpcEvent>,
@@ -59,7 +61,7 @@ impl Mpv {
 
         let observe_speed_payload = MpvIpcCommand::ObserveProperty {
             request_id: this.new_request_id().await,
-            id: 2,
+            id: OBSERVE_SPEED_ID,
             property: MpvIpcProperty::Speed,
         };
 
@@ -67,7 +69,7 @@ impl Mpv {
 
         let observe_pause_payload = MpvIpcCommand::ObserveProperty {
             request_id: this.new_request_id().await,
-            id: 1,
+            id: OBSERVE_PAUSE_ID,
             property: MpvIpcProperty::Pause,
         };
 
@@ -219,6 +221,15 @@ impl Mpv {
 
                 self.send_mpv_ipc_command(payload).await?;
 
+                let ipc_event = MpvIpcEvent::PropertyChange {
+                    id: OBSERVE_PAUSE_ID,
+                    name: MpvIpcPropertyValue::Pause(pause),
+                };
+
+                let mut state = self.state.lock().await;
+                state.events_to_be_ignored.push(ipc_event);
+                drop(state);
+
                 self.execute_seek(time).await?;
             }
             MpvEvent::Seek { time } => {
@@ -230,6 +241,16 @@ impl Mpv {
                     request_id,
                     property: MpvIpcPropertyValue::Speed(factor),
                 };
+
+                let ipc_event = MpvIpcEvent::PropertyChange {
+                    id: OBSERVE_SPEED_ID,
+                    name: MpvIpcPropertyValue::Speed(factor),
+                };
+
+                let mut state = self.state.lock().await;
+                state.events_to_be_ignored.push(ipc_event);
+                drop(state);
+
                 self.send_mpv_ipc_command(payload).await?;
             }
         }
