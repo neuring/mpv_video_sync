@@ -65,6 +65,13 @@ impl Mpv {
             property: MpvIpcProperty::Speed,
         };
 
+        let mut state = this.state.lock().await;
+        state.events_to_be_ignored.push(MpvIpcEvent::PropertyChange {
+            id: OBSERVE_SPEED_ID,
+            name: MpvIpcPropertyValue::Speed(1.0), 
+        });
+        drop(state);
+
         this.send_mpv_ipc_command(observe_speed_payload).await?;
 
         let observe_pause_payload = MpvIpcCommand::ObserveProperty {
@@ -72,6 +79,13 @@ impl Mpv {
             id: OBSERVE_PAUSE_ID,
             property: MpvIpcProperty::Pause,
         };
+
+        let mut state = this.state.lock().await;
+        state.events_to_be_ignored.push(MpvIpcEvent::PropertyChange {
+            id: OBSERVE_PAUSE_ID,
+            name: MpvIpcPropertyValue::Pause(false), 
+        });
+        drop(state);
 
         this.send_mpv_ipc_command(observe_pause_payload).await?;
 

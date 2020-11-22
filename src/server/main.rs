@@ -86,7 +86,7 @@ async fn process_command(
             | ClientMessage::Pause { .. }
             | ClientMessage::Resume { .. }
             | ClientMessage::SpeedChange { .. } => {
-                debug!("Received message from id {}", id);
+                debug!("Received {:?} from id {}", msg, id);
 
                 let mut payload = serde_json::to_string(&msg).unwrap();
                 payload.push('\n');
