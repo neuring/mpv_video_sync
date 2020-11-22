@@ -1,12 +1,18 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
-use std::process::Command;
 use std::process::Stdio;
 use std::str::FromStr;
 use std::sync::Arc;
 
+use anyhow::anyhow;
+use anyhow::Result;
+use async_process::Command;
 use async_std::task;
+use futures::select;
+use futures::FutureExt;
 use structopt::StructOpt;
+use tracing::debug;
+use tracing_subscriber::EnvFilter;
 
 mod backend;
 mod mpv;
@@ -49,9 +55,13 @@ pub struct Config {
     mpv_command: MpvProcessInvocation,
 }
 
-fn main() {
+fn main() -> Result<()> {
+    let collector = tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::from_default_env())
+        .finish();
+    tracing::subscriber::set_global_default(collector).unwrap();
+
     let config = Config::from_args();
-    dbg!(&config);
 
     let mut command = Command::new(&config.mpv_command.command);
 
@@ -67,15 +77,36 @@ fn main() {
         .stdout(Stdio::null())
         .stderr(Stdio::null());
 
-    let mut handle = command.spawn().expect("Couldn't start mpv");
+    let mut handle = command.spawn()?;
 
-    std::thread::spawn(|| {
-        task::block_on(async {
-            backend::start_backend(Arc::new(config)).await.unwrap()
-        })
-    });
+    let backend_fut = backend::start_backend(Arc::new(config));
+    let process_fut = handle.status();
 
-    let status = handle.wait().unwrap();
-    //TODO: implement clean shutdown, by sending a signal to all running threads, somehow...
-    std::process::exit(status.code().unwrap_or(0));
+    let f = async {
+        select! {
+            e = process_fut.fuse() => {
+                debug!("MPV process has finished.");
+                let e: Result<Result<(), _>, _> = e.map(|s| {
+                    if !s.success() {
+                        Err(anyhow!("mpv exited with error: {:?}", s.code()))
+                    } else {
+                        Ok(())
+                    }
+                }).map_err(Into::<anyhow::Error>::into);
+
+                match e {
+                    Ok(e) => e,
+                    Err(e) => Err(e),
+                }
+            }
+            e = backend_fut.fuse() => {
+                debug!("Connection backend finished");
+                handle.kill()?;
+                let e: Result<()> = e.into();
+                e
+            }
+        }
+    };
+
+    task::block_on(f)
 }

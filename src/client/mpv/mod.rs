@@ -4,8 +4,11 @@ use async_std::sync::Mutex;
 use futures::channel::mpsc::{self, UnboundedSender as Sender};
 use futures::SinkExt;
 use std::collections::HashSet;
+use tracing::debug;
+use tracing::info;
+use tracing::trace;
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use async_std::os::unix::net::UnixStream;
 
 mod ipc_data_model;
@@ -18,11 +21,9 @@ pub struct Mpv {
 }
 
 const TIMER_REQUEST_ID: u64 = 3;
-const SPEED_CHANGE_REQUEST_ID: u64 = 2;
-const PAUSE_CHANGE_REQUEST_ID: u64 = 1;
 
 struct MpvState {
-    events_to_be_consumed: Vec<MpvIpcEvent>,
+    events_to_be_ignored: Vec<MpvIpcEvent>,
     expected_responses: HashSet<u64>,
     required_time: Vec<Box<dyn FnOnce(f64) -> MpvEvent + Send + 'static>>,
     time_requests: Vec<Sender<f64>>,
@@ -32,7 +33,7 @@ struct MpvState {
 impl Default for MpvState {
     fn default() -> Self {
         Self {
-            events_to_be_consumed: Vec::new(),
+            events_to_be_ignored: Vec::new(),
             expected_responses: HashSet::new(),
             required_time: Vec::new(),
             time_requests: Vec::new(),
@@ -41,6 +42,7 @@ impl Default for MpvState {
     }
 }
 
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub enum MpvEvent {
     Pause { time: f64 },
     Resume { time: f64 },
@@ -56,7 +58,7 @@ impl Mpv {
         };
 
         let observe_speed_payload = MpvIpcCommand::ObserveProperty {
-            request_id: SPEED_CHANGE_REQUEST_ID,
+            request_id: this.new_request_id().await,
             id: 2,
             property: MpvIpcProperty::Speed,
         };
@@ -64,7 +66,7 @@ impl Mpv {
         this.send_mpv_ipc_command(observe_speed_payload).await?;
 
         let observe_pause_payload = MpvIpcCommand::ObserveProperty {
-            request_id: PAUSE_CHANGE_REQUEST_ID,
+            request_id: this.new_request_id().await,
             id: 1,
             property: MpvIpcProperty::Pause,
         };
@@ -83,10 +85,21 @@ impl Mpv {
     }
 
     async fn send_mpv_ipc_command(&self, cmd: MpvIpcCommand) -> Result<()> {
+        trace!("sending: {:?}", cmd);
+
         let mut payload = serde_json::to_string(&cmd.to_json_command()).unwrap();
         payload.push('\n');
 
-        (&self.stream).write_all(payload.as_bytes()).await?;
+        if cmd.get_request_id() != TIMER_REQUEST_ID {
+            let mut state = self.state.lock().await;
+            state.expected_responses.insert(cmd.get_request_id());
+            drop(state);
+        }
+
+        (&self.stream)
+            .write_all(payload.as_bytes())
+            .await
+            .context("MPV socket failed.")?;
 
         Ok(())
     }
@@ -100,18 +113,19 @@ impl Mpv {
         match msg {
             MpvIpcResponseOrEvent::Event(event) => {
                 let idx = state
-                    .events_to_be_consumed
+                    .events_to_be_ignored
                     .iter()
                     .enumerate()
                     .find(|(_, e)| e == &&event);
                 if let Some((idx, _)) = idx {
-                    state.events_to_be_consumed.swap_remove(idx);
+                    state.events_to_be_ignored.swap_remove(idx);
+                    trace!("Ignored event: {:?}", event);
                     return Ok(());
                 }
 
                 match event {
                     MpvIpcEvent::PropertyChange {
-                        id: PAUSE_CHANGE_REQUEST_ID,
+                        id: 1,
                         name: MpvIpcPropertyValue::Pause(paused),
                     } => {
                         if paused {
@@ -127,7 +141,7 @@ impl Mpv {
                     }
 
                     MpvIpcEvent::PropertyChange {
-                        id: SPEED_CHANGE_REQUEST_ID,
+                        id: 2,
                         name: MpvIpcPropertyValue::Speed(factor),
                     } => {
                         let event = MpvEvent::SpeedChange { factor };
@@ -155,10 +169,8 @@ impl Mpv {
                     for mut send in state.time_requests.drain(..) {
                         send.send(time).await?;
                     }
-                }
-
-                if state.expected_responses.remove(&response.request_id) {
-                    eprintln!("Unexpected Response: {:?}", response);
+                } else if !state.expected_responses.remove(&response.request_id) {
+                    info!("Unexpected Response: {:?}", response);
                 }
             }
         }
@@ -167,21 +179,30 @@ impl Mpv {
     }
 
     pub async fn event_loop(&self, mut sender: Sender<MpvEvent>) -> Result<()> {
-        let stream = BufReader::new(&self.stream);
-        let mut lines = stream.lines();
+        let mut stream = BufReader::new(&self.stream);
+        let mut line = String::new();
 
-        while let Some(line) = lines.next().await {
-            let line: String = line?;
+        loop {
+            line.clear();
+            let bytes_read = stream
+                .read_line(&mut line)
+                .await
+                .context("Connection to mpv ipc socket lost.")?;
+
+            if bytes_read == 0 {
+                Err(anyhow!("Read 0 bytes."))
+                    .context("Connection to mpv ipc socket lost.")?;
+            }
+
+            trace!("receiving: {}", line.trim());
 
             let res = serde_json::from_str(&line);
 
             match res {
                 Ok(msg) => self.process_mpv_response(msg, &mut sender).await?,
-                Err(_) => eprintln!("Couldn't parse response: {}", line),
+                Err(_) => debug!("Couldn't parse mpv response: {}", line.trim()),
             }
         }
-
-        Ok(())
     }
 
     pub async fn execute_event(&self, event: MpvEvent) -> Result<()> {
@@ -228,14 +249,13 @@ impl Mpv {
 
         let request_id = state.next_request_id;
         state.next_request_id += 1;
-        state.expected_responses.insert(request_id);
 
         let payload = MpvIpcCommand::SetProperty {
             request_id,
             property: MpvIpcPropertyValue::TimePos(time),
         };
 
-        state.events_to_be_consumed.push(MpvIpcEvent::Seek);
+        state.events_to_be_ignored.push(MpvIpcEvent::Seek);
 
         drop(state);
 

@@ -18,6 +18,16 @@ pub enum MpvIpcCommand {
     },
 }
 
+impl MpvIpcCommand {
+    pub fn get_request_id(&self) -> u64 {
+        match self {
+            MpvIpcCommand::GetProperty { request_id, .. } => *request_id,
+            MpvIpcCommand::SetProperty { request_id, .. } => *request_id,
+            MpvIpcCommand::ObserveProperty { request_id, .. } => *request_id,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "name", content = "data")]
 pub enum MpvIpcPropertyValue {
