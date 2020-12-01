@@ -1,8 +1,8 @@
-use anyhow::Context;
 use anyhow::bail;
+use anyhow::Context;
 use async_std::io::prelude::BufReadExt;
-use async_std::io::BufReader;
 use async_std::io::prelude::WriteExt;
+use async_std::io::BufReader;
 use async_std::net::TcpListener;
 use async_std::net::TcpStream;
 use async_std::task;
@@ -11,15 +11,15 @@ use futures::channel::mpsc::{
 };
 use futures::SinkExt;
 use futures::StreamExt;
-use tracing::Instrument;
-use tracing::debug;
-use tracing::info_span;
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
+use tracing::debug;
 use tracing::info;
+use tracing::info_span;
+use tracing::Instrument;
 use tracing_subscriber::EnvFilter;
 
 use structopt::StructOpt;
@@ -73,9 +73,9 @@ async fn process_command(
             }
         }
         Command::Disconnection(id) => {
-            connections
-                .remove(&id)
-                .with_context(|| format!("ID: {} doesn't exist in connections.", id))?;
+            connections.remove(&id).with_context(|| {
+                format!("ID: {} doesn't exist in connections.", id)
+            })?;
         }
         Command::Message(id, msg) => match msg {
             ClientMessage::Timestamp { time } => {
@@ -97,7 +97,7 @@ async fn process_command(
                     debug!(
                         "Sending {:?} to {} ({})",
                         msg,
-                        stream.local_addr().unwrap(),
+                        stream.peer_addr().unwrap(),
                         id
                     );
 
@@ -119,13 +119,11 @@ async fn process_command(
 
             if let (Some(min), Some(max)) = (min, max) {
                 if max - min > 5. {
-
                     info!("Synchronizing to necessary ({}, {})!", min, max);
 
                     let payload = ClientMessage::Seek { time: min };
 
                     for (_, Connection { stream, .. }) in connections.iter() {
-
                         let mut payload = serde_json::to_string(&payload).unwrap();
                         payload.push('\n');
 
@@ -178,7 +176,7 @@ async fn connection_handler(
     id: Id,
     mut commands: Sender<Command>,
 ) -> Result<()> {
-    let addr = stream.local_addr()?;
+    let addr = stream.peer_addr()?;
     info!("Connected with {}", addr);
 
     let stream = Arc::new(stream);
@@ -231,7 +229,7 @@ async fn run() -> Result<()> {
         let connection = connection?;
 
         let command_sender = &command_sender;
-        let addr = connection.local_addr().unwrap().to_string();
+        let addr = connection.peer_addr().unwrap().to_string();
         let addr = &addr[..];
         let id = next_id;
         let con_fut = connection_handler(connection, id, command_sender.clone())
