@@ -3,7 +3,7 @@ use async_std::prelude::*;
 use async_std::sync::Mutex;
 use futures::channel::mpsc::{self, UnboundedSender as Sender};
 use futures::SinkExt;
-use std::collections::HashSet;
+use std::{collections::HashSet, fmt, time::{Duration, Instant}};
 use tracing::debug;
 use tracing::info;
 use tracing::trace;
@@ -24,18 +24,54 @@ const TIMER_REQUEST_ID: u64 = 3;
 const OBSERVE_PAUSE_ID: u64 = 1;
 const OBSERVE_SPEED_ID: u64 = 2;
 
+#[derive(Default)]
+struct EventBundle(Vec<(MpvIpcEvent, Instant)>);
+
+impl EventBundle {
+    fn push(&mut self, event: MpvIpcEvent) {
+        self.0.push((event, Instant::now()));
+    }
+
+    fn remove_if_contains(&mut self, event: &MpvIpcEvent) -> bool {
+        // Remove old events, which might've been forgotten by mpv.
+        self.0
+            .retain(|(_, since)| since.elapsed() < Duration::from_millis(500));
+
+        if let Some((idx, _)) =
+            self.0.iter().enumerate().find(|(_, (e, _))| e == event)
+        {
+            self.0.swap_remove(idx);
+            true
+        } else {
+            false
+        }
+    }
+}
+
+impl fmt::Debug for EventBundle {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut f = f.debug_list();
+
+        for (event, time) in self.0.iter() {
+            f.entry(&(event, time.elapsed().as_secs_f32()));
+        }
+
+        f.finish()
+    }
+}
+
 struct MpvState {
-    events_to_be_ignored: Vec<MpvIpcEvent>,
+    events_to_be_ignored: EventBundle,
     expected_responses: HashSet<u64>,
     required_time: Vec<Box<dyn FnOnce(f64) -> MpvEvent + Send + 'static>>,
-    time_requests: Vec<Sender<f64>>,
+    time_requests: Vec<Sender<f64>>, //TODO: refactor with oneshots
     next_request_id: u64,
 }
 
 impl Default for MpvState {
     fn default() -> Self {
         Self {
-            events_to_be_ignored: Vec::new(),
+            events_to_be_ignored: EventBundle::default(),
             expected_responses: HashSet::new(),
             required_time: Vec::new(),
             time_requests: Vec::new(),
@@ -66,10 +102,12 @@ impl Mpv {
         };
 
         let mut state = this.state.lock().await;
-        state.events_to_be_ignored.push(MpvIpcEvent::PropertyChange {
-            id: OBSERVE_SPEED_ID,
-            name: MpvIpcPropertyValue::Speed(1.0), 
-        });
+        state
+            .events_to_be_ignored
+            .push(MpvIpcEvent::PropertyChange {
+                id: OBSERVE_SPEED_ID,
+                name: MpvIpcPropertyValue::Speed(1.0),
+            });
         drop(state);
 
         this.send_mpv_ipc_command(observe_speed_payload).await?;
@@ -81,10 +119,12 @@ impl Mpv {
         };
 
         let mut state = this.state.lock().await;
-        state.events_to_be_ignored.push(MpvIpcEvent::PropertyChange {
-            id: OBSERVE_PAUSE_ID,
-            name: MpvIpcPropertyValue::Pause(false), 
-        });
+        state
+            .events_to_be_ignored
+            .push(MpvIpcEvent::PropertyChange {
+                id: OBSERVE_PAUSE_ID,
+                name: MpvIpcPropertyValue::Pause(false),
+            });
         drop(state);
 
         this.send_mpv_ipc_command(observe_pause_payload).await?;
@@ -128,13 +168,8 @@ impl Mpv {
         let mut state = self.state.lock().await;
         match msg {
             MpvIpcResponseOrEvent::Event(event) => {
-                let idx = state
-                    .events_to_be_ignored
-                    .iter()
-                    .enumerate()
-                    .find(|(_, e)| e == &&event);
-                if let Some((idx, _)) = idx {
-                    state.events_to_be_ignored.swap_remove(idx);
+                trace!("Events bundle: {:?}", state.events_to_be_ignored);
+                if state.events_to_be_ignored.remove_if_contains(&event) {
                     trace!("Ignored event: {:?}", event);
                     return Ok(());
                 }
@@ -235,13 +270,13 @@ impl Mpv {
 
                 self.send_mpv_ipc_command(payload).await?;
 
-                let ipc_event = MpvIpcEvent::PropertyChange {
+                let observe_pause_event = MpvIpcEvent::PropertyChange {
                     id: OBSERVE_PAUSE_ID,
                     name: MpvIpcPropertyValue::Pause(pause),
                 };
 
                 let mut state = self.state.lock().await;
-                state.events_to_be_ignored.push(ipc_event);
+                state.events_to_be_ignored.push(observe_pause_event);
                 drop(state);
 
                 self.execute_seek(time).await?;
