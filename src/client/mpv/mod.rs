@@ -1,7 +1,7 @@
 use async_std::io::BufReader;
 use async_std::prelude::*;
 use async_std::sync::Mutex;
-use futures::channel::mpsc::{self, UnboundedSender as Sender};
+use futures::channel::{mpsc::{UnboundedSender as Sender}, oneshot};
 use futures::SinkExt;
 use std::{collections::HashSet, fmt, time::{Duration, Instant}};
 use tracing::debug;
@@ -64,7 +64,7 @@ struct MpvState {
     events_to_be_ignored: EventBundle,
     expected_responses: HashSet<u64>,
     required_time: Vec<Box<dyn FnOnce(f64) -> MpvEvent + Send + 'static>>,
-    time_requests: Vec<Sender<f64>>, //TODO: refactor with oneshots
+    time_requests: Vec<oneshot::Sender<f64>>,
     next_request_id: u64,
 }
 
@@ -217,8 +217,8 @@ impl Mpv {
                         sender.send(event(time)).await?;
                     }
 
-                    for mut send in state.time_requests.drain(..) {
-                        send.send(time).await?;
+                    for send in state.time_requests.drain(..) {
+                        let _ = send.send(time);
                     }
                 } else if !state.expected_responses.remove(&response.request_id) {
                     info!("Unexpected Response: {:?}", response);
@@ -334,7 +334,7 @@ impl Mpv {
     }
 
     pub async fn request_time(&self) -> Result<f64> {
-        let (time_sender, mut time_receiver) = mpsc::unbounded();
+        let (time_sender, time_receiver) = oneshot::channel();
 
         let mut state = self.state.lock().await;
         state.time_requests.push(time_sender);
@@ -342,10 +342,8 @@ impl Mpv {
 
         self.send_time_request().await?;
 
-        let r = time_receiver
-            .next()
+        time_receiver
             .await
-            .ok_or(anyhow!("Channel closed before receiving time."))?;
-        Ok(r)
+            .map_err(|_| anyhow!("Channel closed before receiving time."))
     }
 }
