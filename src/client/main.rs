@@ -142,7 +142,7 @@ fn main() -> Result<()> {
                 }
             }
             e = backend_fut.fuse() => {
-                debug!("Connection backend finished");
+                debug!("Backend finished");
                 handle.kill()?;
                 let e: Result<()> = e.into();
                 e

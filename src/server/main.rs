@@ -16,10 +16,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
-use tracing::debug;
 use tracing::info;
 use tracing::info_span;
 use tracing::Instrument;
+use tracing::{debug, warn};
 use tracing_subscriber::EnvFilter;
 
 use structopt::StructOpt;
@@ -57,29 +57,91 @@ enum Command {
     Synchronize,
 }
 
-async fn process_command(
-    command: Command,
-    connections: &mut HashMap<Id, Connection>,
-) -> Result<()> {
+/// Shared state over all connections.
+#[derive(Default)]
+struct GlobalState {
+    connections: HashMap<Id, Connection>,
+    player: PlayerState,
+}
+
+impl GlobalState {
+    // Get the minimum time of all connections.
+    // Returns None if there are no connections.
+    fn get_min_time(&self) -> Option<f64> {
+        self.connections
+            .iter()
+            .filter_map(|(_, c)| c.timestamp)
+            .map(|t| t.value)
+            .filter(|v| !v.is_nan())
+            .min_by(|a, b| a.partial_cmp(b).unwrap())
+    }
+
+    // Get the maximum time of all connections.
+    // Returns None if there are no connections.
+    fn get_max_time(&self) -> Option<f64> {
+        self.connections
+            .iter()
+            .filter_map(|(_, c)| c.timestamp)
+            .map(|t| t.value)
+            .filter(|v| !v.is_nan())
+            .max_by(|a, b| a.partial_cmp(b).unwrap())
+    }
+}
+
+/// Expected state of all client mpv players.
+/// The time is ommited because it is kept for each client separately in `Connection`
+struct PlayerState {
+    speed: f64,
+    paused: bool,
+}
+
+impl Default for PlayerState {
+    fn default() -> Self {
+        Self {
+            speed: 1.0,
+            paused: false,
+        }
+    }
+}
+
+async fn send_message(mut stream: &TcpStream, msg: ServerMessage) -> Result<()> {
+    let mut payload = serde_json::to_string(&msg).unwrap();
+    payload.push('\n');
+
+    stream
+        .write_all(payload.as_bytes())
+        .await
+        .with_context(|| format!("Failed to send {:?}", msg))
+}
+
+async fn process_command(command: Command, state: &mut GlobalState) -> Result<()> {
     match command {
         Command::NewConnection(id, stream) => {
-            if let Entry::Vacant(e) = connections.entry(id) {
-                e.insert(Connection {
+            let min_time = state.get_min_time().unwrap_or(0.0);
+            if let Entry::Vacant(e) = state.connections.entry(id) {
+                let connection = e.insert(Connection {
                     stream,
                     timestamp: None,
                 });
+
+                let msg = ServerMessage::new()
+                    .with_time(min_time)
+                    .with_speed(state.player.speed)
+                    .with_pause(state.player.paused);
+
+                send_message(connection.stream.as_ref(), msg).await?;
             } else {
                 bail!("Existing connection with id: {}", id);
             }
         }
         Command::Disconnection(id) => {
-            connections.remove(&id).with_context(|| {
+            state.connections.remove(&id).with_context(|| {
                 format!("ID: {} doesn't exist in connections.", id)
             })?;
         }
         Command::Message(id, msg) => match msg {
             ClientMessage::Timestamp { time } => {
-                connections.get_mut(&id).unwrap().timestamp =
+                state.connections.get_mut(&id).unwrap().timestamp =
                     Some(Timestamp::now(time));
             }
             ClientMessage::Seek { .. }
@@ -88,11 +150,32 @@ async fn process_command(
             | ClientMessage::SpeedChange { .. } => {
                 debug!("Received {:?} from id {}", msg, id);
 
-                let mut payload = serde_json::to_string(&msg).unwrap();
+                let payload = ServerMessage::new();
+
+                let payload = match msg {
+                    ClientMessage::Seek { time } => payload.with_time(time),
+                    ClientMessage::Pause { time } => {
+                        payload.with_time(time).with_pause(true)
+                    }
+                    ClientMessage::Resume { time } => {
+                        payload.with_time(time).with_pause(false)
+                    }
+                    ClientMessage::SpeedChange { factor } => {
+                        payload.with_time(factor)
+                    }
+                    _ => {
+                        warn!("Unreachable match arm reached.");
+                        return Ok(());
+                    }
+                };
+
+                let mut payload = serde_json::to_string(&payload).unwrap();
                 payload.push('\n');
 
-                for (id, Connection { stream, .. }) in
-                    connections.iter().filter(|&(&con_id, _)| con_id != id)
+                for (id, Connection { stream, .. }) in state
+                    .connections
+                    .iter()
+                    .filter(|&(&con_id, _)| con_id != id)
                 {
                     debug!(
                         "Sending {:?} to {} ({})",
@@ -103,31 +186,29 @@ async fn process_command(
 
                     (&**stream).write_all(payload.as_bytes()).await?;
                 }
+
+                match msg {
+                    ClientMessage::Pause { .. } => state.player.paused = true,
+                    ClientMessage::Resume { .. } => state.player.paused = false,
+                    ClientMessage::SpeedChange { factor } => {
+                        state.player.speed = factor
+                    }
+                    _ => {}
+                }
             }
         },
         Command::Synchronize => {
-            let iter = connections
-                .iter()
-                .filter_map(|(_, &Connection { timestamp, .. })| {
-                    Some(timestamp?.value)
-                })
-                .filter(|v| !v.is_nan());
-
-            let min = iter.clone().min_by(|a, b| a.partial_cmp(b).unwrap());
-
-            let max = iter.max_by(|a, b| a.partial_cmp(b).unwrap());
+            let min = state.get_min_time();
+            let max = state.get_max_time();
 
             if let (Some(min), Some(max)) = (min, max) {
                 if max - min > 5. {
                     info!("Synchronizing to necessary ({}, {})!", min, max);
 
-                    let payload = ClientMessage::Seek { time: min };
+                    let payload = ServerMessage::new().with_time(min);
 
-                    for (_, Connection { stream, .. }) in connections.iter() {
-                        let mut payload = serde_json::to_string(&payload).unwrap();
-                        payload.push('\n');
-
-                        (&**stream).write_all(payload.as_bytes()).await?;
+                    for (_, Connection { stream, .. }) in state.connections.iter() {
+                        send_message(&**stream, payload).await?;
                     }
                 }
             }
@@ -137,10 +218,10 @@ async fn process_command(
 }
 
 async fn data_loop(mut commands: Receiver<Command>) -> Result<()> {
-    let mut connections = HashMap::new();
+    let mut state = GlobalState::default();
 
     while let Some(command) = commands.next().await {
-        if let Err(err) = process_command(command, &mut connections).await {
+        if let Err(err) = process_command(command, &mut state).await {
             info!("error occured when processing command: {}", err);
         }
     }

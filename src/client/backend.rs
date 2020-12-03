@@ -27,7 +27,7 @@ use video_sync::*;
 use crate::Config;
 
 async fn network_listen_loop(
-    mut network_events: Sender<ClientMessage>,
+    mut network_events: Sender<ServerMessage>,
     network_socket: &TcpStream,
 ) -> Result<()> {
     let mut network = BufReader::new(network_socket);
@@ -56,24 +56,28 @@ async fn network_listen_loop(
     }
 }
 
-async fn broker_handle_network_event(event: ClientMessage, mpv: &Mpv) -> Result<()> {
+async fn broker_handle_network_event(event: ServerMessage, mpv: &Mpv) -> Result<()> {
     match event {
-        ClientMessage::Pause { time } => {
-            mpv.execute_event(MpvEvent::Pause { time }).await?;
-        }
-        ClientMessage::Resume { time } => {
-            mpv.execute_event(MpvEvent::Resume { time }).await?;
-        }
-        ClientMessage::Seek { time } => {
-            mpv.execute_event(MpvEvent::Seek { time }).await?;
-        }
-        ClientMessage::SpeedChange { factor } => {
-            mpv.execute_event(MpvEvent::SpeedChange { factor }).await?;
-        }
-        msg @ _ => {
-            debug!("Received unexpected message: {:?}", msg);
-            return Ok(());
-        }
+        ServerMessage::Update {
+            time, paused, speed, 
+        } => {
+            match (time, paused) {
+                (Some(time), Some(true)) => {
+                    mpv.execute_event(MpvEvent::Pause { time }).await?;
+                },
+                (Some(time), Some(false)) => {
+                    mpv.execute_event(MpvEvent::Resume { time }).await?;
+                },
+                (Some(time), None) => {
+                    mpv.execute_event(MpvEvent::Seek { time }).await?;
+                },
+                _ => {},
+            }
+
+            if let Some(factor) = speed {
+                mpv.execute_event(MpvEvent::SpeedChange { factor }).await?;
+            }
+        },
     }
     Ok(())
 }
@@ -113,7 +117,7 @@ async fn broker_handle_mpv_event(
 
 async fn broker_loop(
     mpv_events: Receiver<MpvEvent>,
-    network_events: Receiver<ClientMessage>,
+    network_events: Receiver<ServerMessage>,
     mpv: &Mpv,
     network_stream: &TcpStream,
 ) -> Result<()> {
@@ -121,16 +125,19 @@ async fn broker_loop(
         .fuse();
     let mut network_events = network_events
         .fuse();
+    let mut has_received_initial_server_message = false;
 
     loop {
         select! {
             mpv_event = mpv_events.next().fuse() => {
                 if let Some(event) = mpv_event {
                     debug!("MPV EVENT: {:?}", mpv_event);
-                    broker_handle_mpv_event(
-                        event,
-                        network_stream,
-                    ).await?;
+                    if has_received_initial_server_message {
+                        broker_handle_mpv_event(
+                            event,
+                            network_stream,
+                        ).await?;
+                    }
                 }
             },
 
@@ -138,14 +145,17 @@ async fn broker_loop(
                 if let Some(event) = network_event {
                     debug!("NETWORK EVENT: {:?}", network_event);
                     broker_handle_network_event(event, mpv).await?;
+                    has_received_initial_server_message = true;
                 }
             },
 
             _ = task::sleep(Duration::from_millis(2000)).fuse() => {
-                trace!("Requesting time");
-                let time = mpv.request_time().await?;
-                let msg = ClientMessage::Timestamp { time };
-                send_network_message(msg, network_stream).await?;
+                if has_received_initial_server_message {
+                    trace!("Requesting time");
+                    let time = mpv.request_time().await?;
+                    let msg = ClientMessage::Timestamp { time };
+                    send_network_message(msg, network_stream).await?;
+                }
             },
         }
     }
@@ -154,6 +164,7 @@ async fn broker_loop(
 async fn try_ipc_connection(config: &Config) -> Result<UnixStream> {
     let mut attempts = 0;
     let mut last_err = anyhow!("");
+    trace!("Start connecting to {}", &config.ipc_socket);
     let ipc_socket = loop {
         let stream = UnixStream::connect(&config.ipc_socket).await;
 
@@ -161,6 +172,7 @@ async fn try_ipc_connection(config: &Config) -> Result<UnixStream> {
             Ok(stream) => break stream,
             Err(e) => match e.kind() {
                 ErrorKind::NotFound | ErrorKind::ConnectionRefused => {
+                    trace!("IPC socket connection attempt ({}) failed: {}", attempts + 1, e);
                     last_err = e.into();
                 }
                 _ => Err(e)?,
@@ -168,8 +180,9 @@ async fn try_ipc_connection(config: &Config) -> Result<UnixStream> {
         }
 
         task::sleep(Duration::from_millis(100)).await;
+
         attempts += 1;
-        if attempts > 5 {
+        if attempts > 20 {
             return Err(last_err).context("Connection to mpv ipc socket failed.");
         }
     };
