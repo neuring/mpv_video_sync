@@ -1,4 +1,4 @@
-use std::ffi::OsString;
+use std::{convert::Infallible, ffi::OsString, fmt::Debug, fmt::Display};
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::str::FromStr;
@@ -7,12 +7,13 @@ use std::sync::Arc;
 use anyhow::anyhow;
 use anyhow::Result;
 use async_process::Command;
-use async_std::task;
+use async_std::{path::Path, task};
 use futures::select;
 use futures::FutureExt;
 use structopt::StructOpt;
 use tracing::debug;
 use tracing_subscriber::EnvFilter;
+use rand::Rng;
 
 mod backend;
 mod mpv;
@@ -37,6 +38,44 @@ impl FromStr for MpvProcessInvocation {
     }
 }
 
+struct MpvSocket(PathBuf);
+
+impl Debug for MpvSocket {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl Display for MpvSocket {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0.to_string_lossy())
+    }
+}
+
+impl AsRef<Path> for MpvSocket {
+    fn as_ref(&self) -> &Path {
+        self.0.as_ref()
+    }
+}
+
+impl Default for MpvSocket {
+    fn default() -> Self {
+        let mut rng = rand::thread_rng();
+        let postfix = rng.gen_range(0, 100000);
+        let res = format!("/tmp/mpv_sync_socket.{:05}", postfix);
+        let res = PathBuf::from(res);
+        Self(res)
+    }
+}
+
+impl FromStr for MpvSocket {
+    type Err = Infallible;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(Self(PathBuf::from_str(s)?))
+    }
+}
+
 #[derive(Debug, StructOpt)]
 pub struct Config {
     /// URL of synchronizing server.
@@ -45,9 +84,9 @@ pub struct Config {
     /// Path to video which to play.
     video_path: PathBuf,
 
-    #[structopt(long, short = "s", default_value = "/tmp/mpv_sync_socket")]
+    #[structopt(long, short = "s", default_value)]
     /// IPC socket location for communication with mpv.
-    ipc_socket: PathBuf,
+    ipc_socket: MpvSocket,
 
     #[structopt(long, short = "m", default_value = "/usr/bin/mpv")]
     /// mpv command to execute. This can be used to specify a different mpv binary
@@ -67,12 +106,15 @@ fn main() -> Result<()> {
 
     let mut mpv_ipc_flag = OsString::new();
     mpv_ipc_flag.push("--input-ipc-server=");
-    mpv_ipc_flag.push(config.ipc_socket.as_os_str());
+    mpv_ipc_flag.push(&config.ipc_socket.0);
+    //dbg!(&mpv_ipc_flag);
+
+    debug!("{}", mpv_ipc_flag.clone().into_string().unwrap());
 
     command
         .args(&config.mpv_command.flags)
         .arg("--keep-open=always")
-        .arg(mpv_ipc_flag)
+        .arg(&mpv_ipc_flag)
         .arg(&config.video_path)
         .stdout(Stdio::null())
         .stderr(Stdio::null());
