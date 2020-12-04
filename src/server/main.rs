@@ -11,11 +11,11 @@ use futures::channel::mpsc::{
 };
 use futures::SinkExt;
 use futures::StreamExt;
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 use std::{collections::hash_map::Entry, net::SocketAddr};
+use std::{collections::HashMap, net::Shutdown};
 use tracing::info;
 use tracing::info_span;
 use tracing::Instrument;
@@ -48,6 +48,34 @@ struct Connection {
     stream: Arc<TcpStream>,
     timestamp: Option<Timestamp>,
     peer: SocketAddr,
+    state: ConnectionState,
+}
+
+#[derive(Debug)]
+enum ConnectionState {
+    Uninitialized,
+    Initialized { video_hash: String },
+}
+
+impl ConnectionState {
+    // Initialize with video hash.
+    // Reinitialization is possible.
+    fn init(&mut self, video_hash: String) {
+        *self = Self::Initialized { video_hash }
+    }
+
+    fn get_video_hash(&self) -> Option<&str> {
+        match self {
+            Self::Uninitialized => None,
+            Self::Initialized { video_hash } => Some(video_hash),
+        }
+    }
+}
+
+impl Default for ConnectionState {
+    fn default() -> Self {
+        Self::Uninitialized
+    }
 }
 
 type Id = usize;
@@ -120,13 +148,14 @@ async fn process_command(command: Command, state: &mut GlobalState) -> Result<()
         Command::NewConnection(id, stream) => {
             let min_time = state.get_min_time().map(|(_, t)| t).unwrap_or(0.0);
             if let Entry::Vacant(e) = state.connections.entry(id) {
-
-                let peer = stream.peer_addr().context("Failed to extract peer addr.")?;
+                let peer =
+                    stream.peer_addr().context("Failed to extract peer addr.")?;
 
                 let connection = e.insert(Connection {
                     stream,
                     peer,
                     timestamp: None,
+                    state: ConnectionState::default(),
                 });
 
                 let msg = ServerMessage::new()
@@ -144,29 +173,29 @@ async fn process_command(command: Command, state: &mut GlobalState) -> Result<()
                 format!("ID: {} doesn't exist in connections.", id)
             })?;
         }
-        Command::Message(id, msg) => match msg {
-            ClientMessage::Timestamp { time } => {
+        Command::Message(id, ClientMessage::Update(msg)) => match msg {
+            ClientUpdate::Timestamp { time } => {
                 state.connections.get_mut(&id).unwrap().timestamp =
                     Some(Timestamp::now(time));
             }
-            ClientMessage::Seek { .. }
-            | ClientMessage::Pause { .. }
-            | ClientMessage::Resume { .. }
-            | ClientMessage::SpeedChange { .. } => {
+            ClientUpdate::Seek { .. }
+            | ClientUpdate::Pause { .. }
+            | ClientUpdate::Resume { .. }
+            | ClientUpdate::SpeedChange { .. } => {
                 let con = &state.connections[&id];
                 debug!("Received {:?} from {} ({})", msg, con.peer, id);
 
                 let payload = ServerMessage::new();
 
                 let payload = match msg {
-                    ClientMessage::Seek { time } => payload.with_time(time),
-                    ClientMessage::Pause { time } => {
+                    ClientUpdate::Seek { time } => payload.with_time(time),
+                    ClientUpdate::Pause { time } => {
                         payload.with_time(time).with_pause(true)
                     }
-                    ClientMessage::Resume { time } => {
+                    ClientUpdate::Resume { time } => {
                         payload.with_time(time).with_pause(false)
                     }
-                    ClientMessage::SpeedChange { factor } => {
+                    ClientUpdate::SpeedChange { factor } => {
                         payload.with_speed(factor)
                     }
                     _ => {
@@ -183,26 +212,43 @@ async fn process_command(command: Command, state: &mut GlobalState) -> Result<()
                     .iter()
                     .filter(|&(&con_id, _)| con_id != id)
                 {
-                    debug!(
-                        "Sending {:?} to {} ({})",
-                        msg,
-                        peer,
-                        id
-                    );
+                    debug!("Sending {:?} to {} ({})", msg, peer, id);
 
                     (&**stream).write_all(payload.as_bytes()).await?;
                 }
 
                 match msg {
-                    ClientMessage::Pause { .. } => state.player.paused = true,
-                    ClientMessage::Resume { .. } => state.player.paused = false,
-                    ClientMessage::SpeedChange { factor } => {
+                    ClientUpdate::Pause { .. } => state.player.paused = true,
+                    ClientUpdate::Resume { .. } => state.player.paused = false,
+                    ClientUpdate::SpeedChange { factor } => {
                         state.player.speed = factor
                     }
                     _ => {}
                 }
             }
         },
+        Command::Message(id, ClientMessage::Init(msg)) => {
+            let common_hash = state
+                .connections
+                .iter()
+                .filter(|(&con_id, _)| con_id != id)
+                .filter_map(|(_, con)| con.state.get_video_hash())
+                .all(|con_hash| con_hash == &msg.video_hash);
+
+            let con = state.connections.get_mut(&id).unwrap();
+            if common_hash {
+                con.state.init(msg.video_hash);
+            } else {
+                info!(
+                    "{} ({}) has video hash different \
+                      from other established connections.",
+                    con.peer, id
+                );
+                con.stream.shutdown(Shutdown::Both).with_context(|| {
+                    format!("Forcible shutdown of {} ({}) failed.", con.peer, id)
+                })?;
+            }
+        }
         Command::Synchronize => {
             let min = state.get_min_time();
             let max = state.get_max_time();

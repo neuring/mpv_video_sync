@@ -13,6 +13,7 @@ use futures::SinkExt;
 use std::io::ErrorKind;
 use std::sync::Arc;
 use std::time::Duration;
+use std::thread;
 use tracing::debug;
 use tracing::debug_span;
 use tracing::trace;
@@ -86,9 +87,10 @@ async fn broker_handle_network_event(event: ServerMessage, mpv: &Mpv) -> Result<
 }
 
 async fn send_network_message(
-    msg: ClientMessage,
+    msg: impl Into<ClientMessage>,
     mut network: &TcpStream,
 ) -> Result<()> {
+    let msg = msg.into();
     trace!("sending: {:?}", msg);
     let mut payload = serde_json::to_string(&msg).unwrap();
     payload.push('\n');
@@ -102,16 +104,16 @@ async fn broker_handle_mpv_event(
 ) -> Result<()> {
     match event {
         MpvEvent::Pause { time } => {
-            send_network_message(ClientMessage::Pause { time }, network).await?
+            send_network_message(ClientUpdate::Pause { time }, network).await?
         }
         MpvEvent::Resume { time } => {
-            send_network_message(ClientMessage::Resume { time }, network).await?
+            send_network_message(ClientUpdate::Resume { time }, network).await?
         }
         MpvEvent::Seek { time } => {
-            send_network_message(ClientMessage::Seek { time }, network).await?
+            send_network_message(ClientUpdate::Seek { time }, network).await?
         }
         MpvEvent::SpeedChange { factor } => {
-            send_network_message(ClientMessage::SpeedChange { factor }, network)
+            send_network_message(ClientUpdate::SpeedChange { factor }, network)
                 .await?
         }
     }
@@ -138,6 +140,8 @@ async fn broker_loop(
                             event,
                             network_stream,
                         ).await?;
+                    } else {
+                        debug!("Last MPV EVENT ignored");
                     }
                 }
             },
@@ -154,7 +158,7 @@ async fn broker_loop(
                 if has_received_initial_server_message {
                     trace!("Requesting time");
                     let time = mpv.request_time().await?;
-                    let msg = ClientMessage::Timestamp { time };
+                    let msg = ClientUpdate::Timestamp { time };
                     send_network_message(msg, network_stream).await?;
                 }
             },
@@ -209,6 +213,15 @@ pub async fn start_backend(config: Arc<Config>) -> Result<()> {
         })?;
 
     debug!("Connected to network!");
+
+    send_network_message(
+        ClientInit {
+            video_hash: config.video_hash.clone(),
+        },
+        &network_stream,
+    )
+    .await
+    .context("Couldn't send init message.")?;
 
     let (mpv_sender, mpv_receiver) = mpsc::unbounded();
     let (network_sender, network_receiver) = mpsc::unbounded();

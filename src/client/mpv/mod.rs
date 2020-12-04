@@ -145,10 +145,11 @@ impl Mpv {
     }
 
     async fn send_mpv_ipc_command(&self, cmd: MpvIpcCommand) -> Result<()> {
-        trace!("sending: {:?}", cmd);
 
         let mut payload = serde_json::to_string(&cmd.to_json_command()).unwrap();
+        trace!("sending: {:?}", payload);
         payload.push('\n');
+
 
         if cmd.get_request_id() != TIMER_REQUEST_ID {
             let mut state = self.state.lock().await;
