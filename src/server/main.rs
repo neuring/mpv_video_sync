@@ -203,7 +203,7 @@ async fn process_command(command: Command, state: &mut GlobalState) -> Result<()
 
             if let (Some(min), Some(max)) = (min, max) {
                 if max - min > 5. {
-                    info!("Synchronizing to necessary ({}, {})!", min, max);
+                    info!("Synchronizing necessary: ({}, {})!", min, max);
 
                     let payload = ServerMessage::new().with_time(min);
 
@@ -247,7 +247,8 @@ async fn connection_reader_loop(
             Err(anyhow!("Read 0 bytes.")).context("Connection lost")?;
         }
 
-        let msg = serde_json::from_str(&line).context("Client broke protocol")?;
+        let msg = serde_json::from_str(&line)
+            .with_context(|| format!("Client broke protocol: \"{}\"", line.trim()))?;
         commands.send(Command::Message(id, msg)).await?;
     }
 }

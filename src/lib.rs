@@ -10,13 +10,26 @@ pub enum ClientMessage {
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(untagged)]
 pub enum ServerMessage {
-    Update { time: Option<f64>, speed: Option<f64>, paused: Option<bool> },
+    Update {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        time: Option<f64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        speed: Option<f64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        paused: Option<bool>,
+    },
 }
+
 
 impl ServerMessage {
     pub fn new() -> Self {
-        Self::Update { time: None, speed: None, paused: None }
+        Self::Update {
+            time: None,
+            speed: None,
+            paused: None,
+        }
     }
 
     pub fn with_time(mut self, t: f64) -> Self {

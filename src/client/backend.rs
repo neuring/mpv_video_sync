@@ -48,7 +48,7 @@ async fn network_listen_loop(
         }
 
         let msg = serde_json::from_str(&line)
-            .context("Synchronization server broke protocol.")?;
+            .with_context(|| format!("Synchronization server broke protocol: \"{}\"", line.trim()))?;
 
         trace!("receiving: {:?}", msg);
 
