@@ -1,8 +1,8 @@
-use std::{convert::Infallible, ffi::OsString, fmt::Debug, fmt::Display};
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::{convert::Infallible, ffi::OsString, fmt::Debug, fmt::Display};
 
 use anyhow::anyhow;
 use anyhow::Result;
@@ -10,10 +10,10 @@ use async_process::Command;
 use async_std::{path::Path, task};
 use futures::select;
 use futures::FutureExt;
+use rand::Rng;
 use structopt::StructOpt;
 use tracing::debug;
 use tracing_subscriber::EnvFilter;
-use rand::Rng;
 
 mod backend;
 mod mpv;
@@ -38,17 +38,17 @@ impl FromStr for MpvProcessInvocation {
     }
 }
 
-struct MpvSocket(PathBuf);
+struct MpvSocket(String);
 
 impl Debug for MpvSocket {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0.fmt(f)
+        Debug::fmt(&self.0, f)
     }
 }
 
 impl Display for MpvSocket {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0.to_string_lossy())
+        Display::fmt(&self.0, f)
     }
 }
 
@@ -63,7 +63,6 @@ impl Default for MpvSocket {
         let mut rng = rand::thread_rng();
         let postfix = rng.gen_range(0, 100000);
         let res = format!("/tmp/mpv_sync_socket.{:05}", postfix);
-        let res = PathBuf::from(res);
         Self(res)
     }
 }
@@ -72,7 +71,7 @@ impl FromStr for MpvSocket {
     type Err = Infallible;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(Self(PathBuf::from_str(s)?))
+        Ok(Self(s.to_owned()))
     }
 }
 
