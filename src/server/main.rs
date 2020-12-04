@@ -161,7 +161,7 @@ async fn process_command(command: Command, state: &mut GlobalState) -> Result<()
                         payload.with_time(time).with_pause(false)
                     }
                     ClientMessage::SpeedChange { factor } => {
-                        payload.with_time(factor)
+                        payload.with_speed(factor)
                     }
                     _ => {
                         warn!("Unreachable match arm reached.");
