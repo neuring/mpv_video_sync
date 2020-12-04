@@ -11,11 +11,11 @@ use futures::channel::mpsc::{
 };
 use futures::SinkExt;
 use futures::StreamExt;
-use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
+use std::{collections::hash_map::Entry, net::SocketAddr};
 use tracing::info;
 use tracing::info_span;
 use tracing::Instrument;
@@ -27,8 +27,6 @@ use structopt::StructOpt;
 use anyhow::{anyhow, Result};
 
 use video_sync::*;
-
-type Id = u64;
 
 #[derive(Debug, Clone, Copy)]
 struct Timestamp {
@@ -45,10 +43,14 @@ impl Timestamp {
     }
 }
 
+#[derive(Debug)]
 struct Connection {
     stream: Arc<TcpStream>,
     timestamp: Option<Timestamp>,
+    peer: SocketAddr,
 }
+
+type Id = usize;
 
 enum Command {
     NewConnection(Id, Arc<TcpStream>),
@@ -58,38 +60,37 @@ enum Command {
 }
 
 /// Shared state over all connections.
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct GlobalState {
     connections: HashMap<Id, Connection>,
     player: PlayerState,
 }
 
 impl GlobalState {
-    // Get the minimum time of all connections.
+    // Get the minimum time of all connections and the id of this connection.
     // Returns None if there are no connections.
-    fn get_min_time(&self) -> Option<f64> {
+    fn get_min_time(&self) -> Option<(Id, f64)> {
         self.connections
             .iter()
-            .filter_map(|(_, c)| c.timestamp)
-            .map(|t| t.value)
-            .filter(|v| !v.is_nan())
-            .min_by(|a, b| a.partial_cmp(b).unwrap())
+            .filter_map(|(&id, con)| Some((id, con.timestamp?.value)))
+            .filter(|(_, v)| !v.is_nan())
+            .min_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
     }
 
-    // Get the maximum time of all connections.
+    // Get the maximum time of all connections and the id of this connection.
     // Returns None if there are no connections.
-    fn get_max_time(&self) -> Option<f64> {
+    fn get_max_time(&self) -> Option<(Id, f64)> {
         self.connections
             .iter()
-            .filter_map(|(_, c)| c.timestamp)
-            .map(|t| t.value)
-            .filter(|v| !v.is_nan())
-            .max_by(|a, b| a.partial_cmp(b).unwrap())
+            .filter_map(|(&id, con)| Some((id, con.timestamp?.value)))
+            .filter(|(_, v)| !v.is_nan())
+            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
     }
 }
 
 /// Expected state of all client mpv players.
 /// The time is ommited because it is kept for each client separately in `Connection`
+#[derive(Debug)]
 struct PlayerState {
     speed: f64,
     paused: bool,
@@ -117,10 +118,14 @@ async fn send_message(mut stream: &TcpStream, msg: ServerMessage) -> Result<()> 
 async fn process_command(command: Command, state: &mut GlobalState) -> Result<()> {
     match command {
         Command::NewConnection(id, stream) => {
-            let min_time = state.get_min_time().unwrap_or(0.0);
+            let min_time = state.get_min_time().map(|(_, t)| t).unwrap_or(0.0);
             if let Entry::Vacant(e) = state.connections.entry(id) {
+
+                let peer = stream.peer_addr().context("Failed to extract peer addr.")?;
+
                 let connection = e.insert(Connection {
                     stream,
+                    peer,
                     timestamp: None,
                 });
 
@@ -148,7 +153,8 @@ async fn process_command(command: Command, state: &mut GlobalState) -> Result<()
             | ClientMessage::Pause { .. }
             | ClientMessage::Resume { .. }
             | ClientMessage::SpeedChange { .. } => {
-                debug!("Received {:?} from id {}", msg, id);
+                let con = &state.connections[&id];
+                debug!("Received {:?} from {} ({})", msg, con.peer, id);
 
                 let payload = ServerMessage::new();
 
@@ -172,7 +178,7 @@ async fn process_command(command: Command, state: &mut GlobalState) -> Result<()
                 let mut payload = serde_json::to_string(&payload).unwrap();
                 payload.push('\n');
 
-                for (id, Connection { stream, .. }) in state
+                for (id, Connection { stream, peer, .. }) in state
                     .connections
                     .iter()
                     .filter(|&(&con_id, _)| con_id != id)
@@ -180,7 +186,7 @@ async fn process_command(command: Command, state: &mut GlobalState) -> Result<()
                     debug!(
                         "Sending {:?} to {} ({})",
                         msg,
-                        stream.peer_addr().unwrap(),
+                        peer,
                         id
                     );
 
@@ -201,9 +207,15 @@ async fn process_command(command: Command, state: &mut GlobalState) -> Result<()
             let min = state.get_min_time();
             let max = state.get_max_time();
 
-            if let (Some(min), Some(max)) = (min, max) {
+            if let (Some((min_id, min)), Some((max_id, max))) = (min, max) {
                 if max - min > 5. {
-                    info!("Synchronizing necessary: ({}, {})!", min, max);
+                    let max_con = &state.connections[&max_id];
+                    let min_con = &state.connections[&min_id];
+
+                    info!(
+                        "Synchronizing necessary {} ({}) at {} and {} ({}) at max {}!",
+                        min_con.peer, min_id, min, max_con.peer, max_id, max
+                    );
 
                     let payload = ServerMessage::new().with_time(min);
 
@@ -247,8 +259,9 @@ async fn connection_reader_loop(
             Err(anyhow!("Read 0 bytes.")).context("Connection lost")?;
         }
 
-        let msg = serde_json::from_str(&line)
-            .with_context(|| format!("Client broke protocol: \"{}\"", line.trim()))?;
+        let msg = serde_json::from_str(&line).with_context(|| {
+            format!("Client broke protocol: \"{}\"", line.trim())
+        })?;
         commands.send(Command::Message(id, msg)).await?;
     }
 }

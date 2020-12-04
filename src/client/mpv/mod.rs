@@ -1,9 +1,13 @@
 use async_std::io::BufReader;
 use async_std::prelude::*;
 use async_std::sync::Mutex;
-use futures::channel::{mpsc::{UnboundedSender as Sender}, oneshot};
+use futures::channel::{mpsc::UnboundedSender as Sender, oneshot};
 use futures::SinkExt;
-use std::{collections::HashSet, fmt, time::{Duration, Instant}};
+use std::{
+    collections::HashSet,
+    fmt,
+    time::{Duration, Instant},
+};
 use tracing::debug;
 use tracing::info;
 use tracing::trace;

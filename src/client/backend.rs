@@ -10,12 +10,12 @@ use futures::channel::mpsc::UnboundedSender as Sender;
 use futures::select;
 use futures::FutureExt;
 use futures::SinkExt;
-use tracing::trace;
 use std::io::ErrorKind;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::debug;
 use tracing::debug_span;
+use tracing::trace;
 use tracing_futures::Instrument;
 
 use anyhow::{anyhow, Result};
@@ -47,8 +47,9 @@ async fn network_listen_loop(
                 .context("Connection to synchronization server lost.")?;
         }
 
-        let msg = serde_json::from_str(&line)
-            .with_context(|| format!("Synchronization server broke protocol: \"{}\"", line.trim()))?;
+        let msg = serde_json::from_str(&line).with_context(|| {
+            format!("Synchronization server broke protocol: \"{}\"", line.trim())
+        })?;
 
         trace!("receiving: {:?}", msg);
 
@@ -59,25 +60,27 @@ async fn network_listen_loop(
 async fn broker_handle_network_event(event: ServerMessage, mpv: &Mpv) -> Result<()> {
     match event {
         ServerMessage::Update {
-            time, paused, speed, 
+            time,
+            paused,
+            speed,
         } => {
             match (time, paused) {
                 (Some(time), Some(true)) => {
                     mpv.execute_event(MpvEvent::Pause { time }).await?;
-                },
+                }
                 (Some(time), Some(false)) => {
                     mpv.execute_event(MpvEvent::Resume { time }).await?;
-                },
+                }
                 (Some(time), None) => {
                     mpv.execute_event(MpvEvent::Seek { time }).await?;
-                },
-                _ => {},
+                }
+                _ => {}
             }
 
             if let Some(factor) = speed {
                 mpv.execute_event(MpvEvent::SpeedChange { factor }).await?;
             }
-        },
+        }
     }
     Ok(())
 }
@@ -121,10 +124,8 @@ async fn broker_loop(
     mpv: &Mpv,
     network_stream: &TcpStream,
 ) -> Result<()> {
-    let mut mpv_events = mpv_events
-        .fuse();
-    let mut network_events = network_events
-        .fuse();
+    let mut mpv_events = mpv_events.fuse();
+    let mut network_events = network_events.fuse();
     let mut has_received_initial_server_message = false;
 
     loop {
@@ -172,7 +173,11 @@ async fn try_ipc_connection(config: &Config) -> Result<UnixStream> {
             Ok(stream) => break stream,
             Err(e) => match e.kind() {
                 ErrorKind::NotFound | ErrorKind::ConnectionRefused => {
-                    trace!("IPC socket connection attempt ({}) failed: {}", attempts + 1, e);
+                    trace!(
+                        "IPC socket connection attempt ({}) failed: {}",
+                        attempts + 1,
+                        e
+                    );
                     last_err = e.into();
                 }
                 _ => Err(e)?,

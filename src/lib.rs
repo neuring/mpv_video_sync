@@ -22,7 +22,6 @@ pub enum ServerMessage {
     },
 }
 
-
 impl ServerMessage {
     pub fn new() -> Self {
         Self::Update {
