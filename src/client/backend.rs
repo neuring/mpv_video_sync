@@ -13,13 +13,12 @@ use futures::SinkExt;
 use std::io::ErrorKind;
 use std::sync::Arc;
 use std::time::Duration;
-use std::thread;
 use tracing::debug;
 use tracing::debug_span;
 use tracing::trace;
 use tracing_futures::Instrument;
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, bail, Result};
 
 use crate::mpv::{Mpv, MpvEvent};
 
@@ -27,15 +26,25 @@ use video_sync::*;
 
 use crate::Config;
 
-async fn network_listen_loop(
-    mut network_events: Sender<ServerMessage>,
-    network_socket: &TcpStream,
-) -> Result<()> {
-    let mut network = BufReader::new(network_socket);
-    let mut line = String::new();
+struct NetworkListener<'stream> {
+    stream: BufReader<&'stream TcpStream>,
+    buffer: String,
+    network_events: Sender<ServerMessage>,
+}
 
-    debug!("Listening to network...");
-    loop {
+impl<'a> NetworkListener<'a> {
+    fn new(stream: &'a TcpStream, events: Sender<ServerMessage>) -> Self {
+        Self {
+            stream: BufReader::new(stream),
+            network_events: events,
+            buffer: String::new(),
+        }
+    }
+
+    async fn receive_next_message(&mut self) -> Result<ServerMessage> {
+        let network = &mut self.stream;
+        let mut line = &mut self.buffer;
+
         line.clear();
         let bytes_read = network
             .read_line(&mut line)
@@ -54,7 +63,16 @@ async fn network_listen_loop(
 
         trace!("receiving: {:?}", msg);
 
-        network_events.send(msg).await?;
+        Ok(msg)
+    }
+
+    async fn listen(&mut self) -> Result<()> {
+        debug!("Listening to network...");
+        loop {
+            let msg = self.receive_next_message().await?;
+
+            self.network_events.send(msg).await?;
+        }
     }
 }
 
@@ -128,21 +146,16 @@ async fn broker_loop(
 ) -> Result<()> {
     let mut mpv_events = mpv_events.fuse();
     let mut network_events = network_events.fuse();
-    let mut has_received_initial_server_message = false;
 
     loop {
         select! {
             mpv_event = mpv_events.next().fuse() => {
                 if let Some(event) = mpv_event {
                     debug!("MPV EVENT: {:?}", mpv_event);
-                    if has_received_initial_server_message {
-                        broker_handle_mpv_event(
-                            event,
-                            network_stream,
-                        ).await?;
-                    } else {
-                        debug!("Last MPV EVENT ignored");
-                    }
+                    broker_handle_mpv_event(
+                        event,
+                        network_stream,
+                    ).await?;
                 }
             },
 
@@ -150,17 +163,14 @@ async fn broker_loop(
                 if let Some(event) = network_event {
                     debug!("NETWORK EVENT: {:?}", network_event);
                     broker_handle_network_event(event, mpv).await?;
-                    has_received_initial_server_message = true;
                 }
             },
 
             _ = task::sleep(Duration::from_millis(2000)).fuse() => {
-                if has_received_initial_server_message {
-                    trace!("Requesting time");
-                    let time = mpv.request_time().await?;
-                    let msg = ClientUpdate::Timestamp { time };
-                    send_network_message(msg, network_stream).await?;
-                }
+                trace!("Requesting time");
+                let time = mpv.request_time().await?;
+                let msg = ClientUpdate::Timestamp { time };
+                send_network_message(msg, network_stream).await?;
             },
         }
     }
@@ -226,12 +236,33 @@ pub async fn start_backend(config: Arc<Config>) -> Result<()> {
     let (mpv_sender, mpv_receiver) = mpsc::unbounded();
     let (network_sender, network_receiver) = mpsc::unbounded();
 
+    let mut network_listener = NetworkListener::new(&network_stream, network_sender);
+
+    let init_msg = network_listener
+        .receive_next_message()
+        .await
+        .context("Didn't receive init server message")?;
+
+    if let ServerMessage::Update {
+        time: Some(time),
+        paused: Some(paused),
+        speed: Some(speed),
+    } = init_msg
+    {
+        mpv.execute_event(MpvEvent::new_paused(paused, time)).await?;
+        mpv.execute_event(MpvEvent::SpeedChange { factor: speed })
+            .await?;
+    } else {
+        bail!("Invalid initial server message: {:?}", init_msg);
+    }
+
     let mut mpv_listener = mpv
         .event_loop(mpv_sender)
         .instrument(debug_span!("MPV event loop"))
         .boxed()
         .fuse();
-    let mut network_listener = network_listen_loop(network_sender, &network_stream)
+    let mut network_listener = network_listener
+        .listen()
         .instrument(debug_span!("Network listener loop"))
         .boxed()
         .fuse();

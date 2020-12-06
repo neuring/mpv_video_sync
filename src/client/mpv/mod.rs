@@ -92,6 +92,16 @@ pub enum MpvEvent {
     SpeedChange { factor: f64 },
 }
 
+impl MpvEvent {
+    pub fn new_paused(pause: bool, time: f64) -> Self {
+        if pause {
+            Self::Pause { time }
+        } else {
+            Self::Resume { time }
+        }
+    }
+}
+
 impl Mpv {
     pub async fn new(stream: UnixStream) -> Result<Self> {
         let this = Self {
@@ -227,6 +237,10 @@ impl Mpv {
                     }
                 } else if !state.expected_responses.remove(&response.request_id) {
                     info!("Unexpected Response: {:?}", response);
+                } else {
+                    if response.error != MpvIpcErrorStatus::Success {
+                        info!("Error MPV Response: {:?}", response);
+                    }
                 }
             }
         }

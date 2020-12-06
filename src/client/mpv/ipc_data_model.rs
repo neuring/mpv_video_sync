@@ -132,6 +132,8 @@ pub enum MpvIpcErrorStatus {
     Success,
     #[serde(rename = "invalid parameter")]
     InvalidParameter,
+    #[serde(rename = "property unavailable")]
+    PropertyUnavailable,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]

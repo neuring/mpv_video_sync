@@ -1,4 +1,4 @@
-use std::process::Stdio;
+use std::{time::Duration, process::Stdio};
 use std::str::FromStr;
 use std::sync::Arc;
 use std::{convert::Infallible, ffi::OsString, fmt::Debug, fmt::Display};
@@ -11,7 +11,7 @@ use anyhow::Result;
 use anyhow::{anyhow, Context};
 use async_process::Command;
 use async_std::task;
-use futures::select;
+use futures::future::{select, Either};
 use futures::FutureExt;
 use hex::ToHex;
 use memmap::MmapOptions;
@@ -155,11 +155,18 @@ fn main() -> Result<()> {
     let mut handle = command.spawn()?;
 
     let backend_fut = backend::start_backend(Arc::new(config));
-    let process_fut = handle.status();
+
+    // Let mpv run for a second before starting to interact with it.
+    // This solves a problem where mpv fails to receive set time-pos commands
+    // if they come to early.
+    // TODO: Fix this by repeatedly trying to send command, until it succeeds.
+    let backend_fut = task::sleep(Duration::from_secs(1)).then(|_| backend_fut).boxed();
+
+    let process_fut = handle.status().boxed();
 
     let f = async {
-        select! {
-            e = process_fut.fuse() => {
+        match select(process_fut, backend_fut).await {
+            Either::Left((e, _)) => {
                 debug!("MPV process has finished.");
                 let e: Result<Result<(), _>, _> = e.map(|s| {
                     if !s.success() {
@@ -173,13 +180,13 @@ fn main() -> Result<()> {
                     Ok(e) => e,
                     Err(e) => Err(e),
                 }
-            }
-            e = backend_fut.fuse() => {
+            },
+            Either::Right((e, _)) => {
                 debug!("Backend finished");
                 handle.kill()?;
                 let e: Result<()> = e.into();
                 e
-            }
+            },
         }
     };
 
