@@ -1,18 +1,21 @@
-use std::process::Stdio;
-use std::str::FromStr;
-use std::sync::Arc;
-use std::{convert::Infallible, ffi::OsString, fmt::Debug, fmt::Display};
 use std::{
+    convert::Infallible,
+    ffi::OsString,
+    fmt::{Debug, Display},
     fs::File,
     path::{Path, PathBuf},
+    process::Stdio,
+    str::FromStr,
+    sync::Arc,
 };
 
-use anyhow::Result;
-use anyhow::{anyhow, Context};
+use anyhow::{anyhow, Context, Result};
 use async_process::Command;
 use async_std::task;
-use futures::future::{select, Either};
-use futures::FutureExt;
+use futures::{
+    future::{select, Either},
+    FutureExt,
+};
 use hex::ToHex;
 use memmap::MmapOptions;
 use rand::Rng;

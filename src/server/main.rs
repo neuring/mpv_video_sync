@@ -1,31 +1,28 @@
-use anyhow::bail;
-use anyhow::Context;
-use async_std::io::prelude::BufReadExt;
-use async_std::io::prelude::WriteExt;
-use async_std::io::BufReader;
-use async_std::net::TcpListener;
-use async_std::net::TcpStream;
-use async_std::task;
-use futures::channel::mpsc::{
-    self, UnboundedReceiver as Receiver, UnboundedSender as Sender,
+use std::{
+    collections::{hash_map::Entry, HashMap},
+    net::{Shutdown, SocketAddr},
+    sync::Arc,
+    time::{Duration, Instant},
 };
-use futures::SinkExt;
-use futures::StreamExt;
-use std::sync::Arc;
-use std::time::Duration;
-use std::time::Instant;
-use std::{collections::hash_map::Entry, net::SocketAddr};
-use std::{collections::HashMap, net::Shutdown};
-use tracing::info;
-use tracing::info_span;
-use tracing::Instrument;
-use tracing::{debug, warn};
-use tracing_subscriber::EnvFilter;
 
+use anyhow::{anyhow, bail, Context, Result};
+use async_std::{
+    io::{
+        prelude::{BufReadExt, WriteExt},
+        BufReader,
+    },
+    net::{TcpListener, TcpStream},
+    task,
+};
+use futures::{
+    channel::mpsc::{
+        self, UnboundedReceiver as Receiver, UnboundedSender as Sender,
+    },
+    SinkExt, StreamExt,
+};
 use structopt::StructOpt;
-
-use anyhow::{anyhow, Result};
-
+use tracing::{debug, info, info_span, warn, Instrument};
+use tracing_subscriber::EnvFilter;
 use video_sync::*;
 
 #[derive(Debug, Clone, Copy)]

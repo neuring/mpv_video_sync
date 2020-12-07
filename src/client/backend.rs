@@ -1,28 +1,24 @@
-use anyhow::Context;
-use anyhow::{anyhow, bail, Result};
-use async_std::io::BufReader;
-use async_std::net::TcpStream;
-use async_std::os::unix::net::UnixStream;
-use async_std::prelude::*;
-use async_std::task;
-use futures::channel::mpsc;
-use futures::channel::mpsc::UnboundedReceiver as Receiver;
-use futures::channel::mpsc::UnboundedSender as Sender;
-use futures::select;
-use futures::FutureExt;
-use futures::SinkExt;
-use std::io::ErrorKind;
-use std::sync::Arc;
-use std::time::Duration;
-use tracing::debug;
-use tracing::debug_span;
-use tracing::trace;
+use std::{io::ErrorKind, sync::Arc, time::Duration};
+
+use anyhow::{anyhow, bail, Context, Result};
+use async_std::{
+    io::BufReader, net::TcpStream, os::unix::net::UnixStream, prelude::*, task,
+};
+use futures::{
+    channel::{
+        mpsc,
+        mpsc::{UnboundedReceiver as Receiver, UnboundedSender as Sender},
+    },
+    select, FutureExt, SinkExt,
+};
+use tracing::{debug, debug_span, trace};
 use tracing_futures::Instrument;
-
-use crate::mpv::{Mpv, MpvEvent};
-use crate::Config;
-
 use video_sync::*;
+
+use crate::{
+    mpv::{Mpv, MpvEvent},
+    Config,
+};
 
 struct NetworkListener<'stream> {
     stream: BufReader<&'stream TcpStream>,

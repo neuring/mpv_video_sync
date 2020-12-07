@@ -1,22 +1,18 @@
-use async_std::prelude::*;
-use async_std::sync::Mutex;
-use async_std::{io::BufReader, task};
-use futures::{
-    channel::{mpsc::UnboundedSender as Sender, oneshot},
-    future,
-};
-use futures::{FutureExt, SinkExt};
 use std::{
     collections::{HashMap, HashSet},
     fmt,
     time::{Duration, Instant},
 };
-use tracing::debug;
-use tracing::info;
-use tracing::trace;
 
 use anyhow::{anyhow, bail, Context, Result};
-use async_std::os::unix::net::UnixStream;
+use async_std::{
+    io::BufReader, os::unix::net::UnixStream, prelude::*, sync::Mutex, task,
+};
+use futures::{
+    channel::{mpsc::UnboundedSender as Sender, oneshot},
+    future, FutureExt, SinkExt,
+};
+use tracing::{debug, info, trace};
 
 mod ipc_data_model;
 
