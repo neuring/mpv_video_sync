@@ -36,7 +36,9 @@ impl FromStr for MpvProcessInvocation {
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         let mut iter = s.split_whitespace().map(|e| e.to_string());
 
-        let command = iter.next().ok_or_else(|| "Command cannot be empty.".to_string())?;
+        let command = iter
+            .next()
+            .ok_or_else(|| "Command cannot be empty.".to_string())?;
 
         let flags = iter.collect();
 

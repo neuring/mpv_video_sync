@@ -27,11 +27,11 @@ use video_sync::*;
 struct NetworkListener<'stream> {
     stream: BufReader<&'stream TcpStream>,
     buffer: String,
-    network_events: Sender<ServerMessage>,
+    network_events: Sender<ServerUpdate>,
 }
 
 impl<'a> NetworkListener<'a> {
-    fn new(stream: &'a TcpStream, events: Sender<ServerMessage>) -> Self {
+    fn new(stream: &'a TcpStream, events: Sender<ServerUpdate>) -> Self {
         Self {
             stream: BufReader::new(stream),
             network_events: events,
@@ -69,14 +69,19 @@ impl<'a> NetworkListener<'a> {
         loop {
             let msg = self.receive_next_message().await?;
 
-            self.network_events.send(msg).await?;
+            match msg {
+                ServerMessage::Update(update) => self.network_events.send(update).await?,
+                ServerMessage::Disconnect(ServerDisconnect::IncorrectHash) => { 
+                    bail!("Incorrect video file.")
+                }
+            }
         }
     }
 }
 
-async fn broker_handle_network_event(event: ServerMessage, mpv: &Mpv) -> Result<()> {
+async fn broker_handle_network_event(event: ServerUpdate, mpv: &Mpv) -> Result<()> {
     match event {
-        ServerMessage::Update {
+        ServerUpdate {
             time,
             paused,
             speed,
@@ -139,7 +144,7 @@ async fn broker_handle_mpv_event(
 
 async fn broker_loop(
     mpv_events: Receiver<MpvEvent>,
-    network_events: Receiver<ServerMessage>,
+    network_events: Receiver<ServerUpdate>,
     mpv: &Mpv,
     network_stream: &TcpStream,
 ) -> Result<()> {
@@ -152,7 +157,7 @@ async fn broker_loop(
         .await
         .context("Didn't receive init server message")?;
 
-    if let ServerMessage::Update {
+    if let ServerUpdate {
         time: Some(time),
         paused: Some(paused),
         speed: Some(speed),

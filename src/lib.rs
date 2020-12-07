@@ -22,50 +22,49 @@ pub enum ClientUpdate {
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub enum ServerDisconnect {
+    IncorrectHash,
+}
+
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
+pub struct ServerUpdate{
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub time: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub speed: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub paused: Option<bool>,
+}
+
+#[derive(Debug, Clone, Copy, From, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ServerMessage {
-    Update {
-        #[serde(skip_serializing_if = "Option::is_none")]
-        time: Option<f64>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        speed: Option<f64>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        paused: Option<bool>,
-    },
+    Update(ServerUpdate),
+    Disconnect(ServerDisconnect),
 }
 
-impl Default for ServerMessage {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl ServerMessage {
+impl ServerUpdate {
     pub fn new() -> Self {
-        Self::Update {
-            time: None,
-            speed: None,
-            paused: None,
-        }
+        Self::default()
     }
 
     pub fn with_time(mut self, t: f64) -> Self {
         match &mut self {
-            Self::Update { time, .. } => *time = Some(t),
+            Self { time, .. } => *time = Some(t),
         }
         self
     }
 
     pub fn with_pause(mut self, p: bool) -> Self {
         match &mut self {
-            Self::Update { paused, .. } => *paused = Some(p),
+            Self { paused, .. } => *paused = Some(p),
         }
         self
     }
 
     pub fn with_speed(mut self, s: f64) -> Self {
         match &mut self {
-            Self::Update { speed, .. } => *speed = Some(s),
+            Self { speed, .. } => *speed = Some(s),
         }
         self
     }

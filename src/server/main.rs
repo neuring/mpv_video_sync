@@ -133,7 +133,8 @@ impl Default for PlayerState {
     }
 }
 
-async fn send_message(mut stream: &TcpStream, msg: ServerMessage) -> Result<()> {
+async fn send_message(mut stream: &TcpStream, msg: impl Into<ServerMessage>) -> Result<()> {
+    let msg = msg.into();
     let mut payload = serde_json::to_string(&msg).unwrap();
     payload.push('\n');
 
@@ -158,7 +159,7 @@ async fn process_command(command: Command, state: &mut GlobalState) -> Result<()
                     state: ConnectionState::default(),
                 });
 
-                let msg = ServerMessage::new()
+                let msg = ServerUpdate::new()
                     .with_time(min_time)
                     .with_speed(state.player.speed)
                     .with_pause(state.player.paused);
@@ -185,7 +186,7 @@ async fn process_command(command: Command, state: &mut GlobalState) -> Result<()
                 let con = &state.connections[&id];
                 debug!("Received {:?} from {} ({})", msg, con.peer, id);
 
-                let payload = ServerMessage::new();
+                let payload = ServerUpdate::new();
 
                 let payload = match msg {
                     ClientUpdate::Seek { time } => payload.with_time(time),
@@ -244,6 +245,13 @@ async fn process_command(command: Command, state: &mut GlobalState) -> Result<()
                       from other established connections.",
                     con.peer, id
                 );
+
+                send_message(
+                    &con.stream,
+                    ServerDisconnect::IncorrectHash,
+                )
+                .await?;
+
                 con.stream.shutdown(Shutdown::Both).with_context(|| {
                     format!("Forcible shutdown of {} ({}) failed.", con.peer, id)
                 })?;
@@ -263,7 +271,7 @@ async fn process_command(command: Command, state: &mut GlobalState) -> Result<()
                         min_con.peer, min_id, min, max_con.peer, max_id, max
                     );
 
-                    let payload = ServerMessage::new().with_time(min);
+                    let payload = ServerUpdate::new().with_time(min);
 
                     for (_, Connection { stream, .. }) in state.connections.iter() {
                         send_message(&**stream, payload).await?;
