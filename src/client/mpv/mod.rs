@@ -465,24 +465,16 @@ impl Mpv {
     pub async fn request_time(&self) -> Result<f64> {
         let (time_sender, time_receiver) = oneshot::channel();
 
-        trace!("A");
-
         {
             let mut state = self.state.lock().await;
             state.time_requests.push(time_sender);
         }
 
-        trace!("B");
-
         self.send_time_request().await?;
-
-        trace!("C");
 
         let time = time_receiver
             .await
             .expect("Channel closed before receiving time.");
-
-        trace!("D");
 
         Ok(time)
     }
