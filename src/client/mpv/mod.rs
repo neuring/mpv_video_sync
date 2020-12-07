@@ -463,7 +463,6 @@ impl Mpv {
     }
 
     pub async fn request_time(&self) -> Result<f64> {
-
         let (time_sender, time_receiver) = oneshot::channel();
 
         trace!("A");
