@@ -126,7 +126,7 @@ pub struct MpvIpcResponse {
     pub data: Option<serde_json::Value>,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
 pub enum MpvIpcErrorStatus {
     #[serde(rename = "success")]
     Success,

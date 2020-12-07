@@ -1,4 +1,4 @@
-use std::{time::Duration, process::Stdio};
+use std::process::Stdio;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::{convert::Infallible, ffi::OsString, fmt::Debug, fmt::Display};
@@ -109,7 +109,6 @@ fn calculate_file_hash(path: impl AsRef<Path>) -> Result<String> {
 
     let mmap = unsafe { MmapOptions::new().map(&file)? };
 
-
     let mut hasher = Sha256::new();
 
     hasher.update(&mmap[..]);
@@ -154,39 +153,34 @@ fn main() -> Result<()> {
 
     let mut handle = command.spawn()?;
 
-    let backend_fut = backend::start_backend(Arc::new(config));
-
-    // Let mpv run for a second before starting to interact with it.
-    // This solves a problem where mpv fails to receive set time-pos commands
-    // if they come to early.
-    // TODO: Fix this by repeatedly trying to send command, until it succeeds.
-    let backend_fut = task::sleep(Duration::from_secs(1)).then(|_| backend_fut).boxed();
-
+    let backend_fut = backend::start_backend(Arc::new(config)).boxed();
     let process_fut = handle.status().boxed();
 
     let f = async {
         match select(process_fut, backend_fut).await {
             Either::Left((e, _)) => {
                 debug!("MPV process has finished.");
-                let e: Result<Result<(), _>, _> = e.map(|s| {
-                    if !s.success() {
-                        Err(anyhow!("mpv exited with error: {:?}", s.code()))
-                    } else {
-                        Ok(())
-                    }
-                }).map_err(Into::<anyhow::Error>::into);
+                let e: Result<Result<(), _>, _> = e
+                    .map(|s| {
+                        if !s.success() {
+                            Err(anyhow!("mpv exited with error: {:?}", s.code()))
+                        } else {
+                            Ok(())
+                        }
+                    })
+                    .map_err(Into::<anyhow::Error>::into);
 
                 match e {
                     Ok(e) => e,
                     Err(e) => Err(e),
                 }
-            },
+            }
             Either::Right((e, _)) => {
                 debug!("Backend finished");
                 handle.kill()?;
                 let e: Result<()> = e.into();
                 e
-            },
+            }
         }
     };
 

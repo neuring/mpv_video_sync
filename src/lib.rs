@@ -1,10 +1,10 @@
-use serde::{Deserialize, Serialize};
 use derive_more::From;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, From)]
 pub enum ClientMessage {
     Init(ClientInit),
-    Update(ClientUpdate)
+    Update(ClientUpdate),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -20,7 +20,6 @@ pub enum ClientUpdate {
     Resume { time: f64 },
     SpeedChange { factor: f64 },
 }
-
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(untagged)]

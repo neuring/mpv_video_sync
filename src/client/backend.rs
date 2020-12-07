@@ -1,4 +1,5 @@
 use anyhow::Context;
+use anyhow::{anyhow, bail, Result};
 use async_std::io::BufReader;
 use async_std::net::TcpStream;
 use async_std::os::unix::net::UnixStream;
@@ -18,13 +19,10 @@ use tracing::debug_span;
 use tracing::trace;
 use tracing_futures::Instrument;
 
-use anyhow::{anyhow, bail, Result};
-
 use crate::mpv::{Mpv, MpvEvent};
+use crate::Config;
 
 use video_sync::*;
-
-use crate::Config;
 
 struct NetworkListener<'stream> {
     stream: BufReader<&'stream TcpStream>,
@@ -85,19 +83,20 @@ async fn broker_handle_network_event(event: ServerMessage, mpv: &Mpv) -> Result<
         } => {
             match (time, paused) {
                 (Some(time), Some(true)) => {
-                    mpv.execute_event(MpvEvent::Pause { time }).await?;
+                    mpv.execute_event(MpvEvent::Pause { time }, 1).await?;
                 }
                 (Some(time), Some(false)) => {
-                    mpv.execute_event(MpvEvent::Resume { time }).await?;
+                    mpv.execute_event(MpvEvent::Resume { time }, 1).await?;
                 }
                 (Some(time), None) => {
-                    mpv.execute_event(MpvEvent::Seek { time }).await?;
+                    mpv.execute_event(MpvEvent::Seek { time }, 1).await?;
                 }
                 _ => {}
             }
 
             if let Some(factor) = speed {
-                mpv.execute_event(MpvEvent::SpeedChange { factor }).await?;
+                mpv.execute_event(MpvEvent::SpeedChange { factor }, 1)
+                    .await?;
             }
         }
     }
@@ -146,6 +145,26 @@ async fn broker_loop(
 ) -> Result<()> {
     let mut mpv_events = mpv_events.fuse();
     let mut network_events = network_events.fuse();
+
+    // First wait for initial server message to set up mpv player.
+    let init_msg = network_events
+        .next()
+        .await
+        .context("Didn't receive init server message")?;
+
+    if let ServerMessage::Update {
+        time: Some(time),
+        paused: Some(paused),
+        speed: Some(speed),
+    } = init_msg
+    {
+        mpv.execute_event(MpvEvent::new_paused(paused, time), 10)
+            .await?;
+        mpv.execute_event(MpvEvent::SpeedChange { factor: speed }, 1)
+            .await?;
+    } else {
+        bail!("Invalid initial server message: {:?}", init_msg);
+    }
 
     loop {
         select! {
@@ -237,24 +256,6 @@ pub async fn start_backend(config: Arc<Config>) -> Result<()> {
     let (network_sender, network_receiver) = mpsc::unbounded();
 
     let mut network_listener = NetworkListener::new(&network_stream, network_sender);
-
-    let init_msg = network_listener
-        .receive_next_message()
-        .await
-        .context("Didn't receive init server message")?;
-
-    if let ServerMessage::Update {
-        time: Some(time),
-        paused: Some(paused),
-        speed: Some(speed),
-    } = init_msg
-    {
-        mpv.execute_event(MpvEvent::new_paused(paused, time)).await?;
-        mpv.execute_event(MpvEvent::SpeedChange { factor: speed })
-            .await?;
-    } else {
-        bail!("Invalid initial server message: {:?}", init_msg);
-    }
 
     let mut mpv_listener = mpv
         .event_loop(mpv_sender)
