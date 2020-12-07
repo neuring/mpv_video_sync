@@ -27,7 +27,7 @@ pub enum ServerDisconnect {
 }
 
 #[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
-pub struct ServerUpdate{
+pub struct ServerUpdate {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub time: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]

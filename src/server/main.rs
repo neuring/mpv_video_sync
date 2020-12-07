@@ -51,24 +51,17 @@ struct Connection {
     state: ConnectionState,
 }
 
-#[derive(Debug)]
+// Currently unused, but might be used later on.
+#[derive(Debug, PartialEq, Eq)]
+#[allow(unused)]
 enum ConnectionState {
     Uninitialized,
-    Initialized { video_hash: String },
+    Initialized,
 }
 
 impl ConnectionState {
-    // Initialize with video hash.
-    // Reinitialization is possible.
-    fn init(&mut self, video_hash: String) {
-        *self = Self::Initialized { video_hash }
-    }
-
-    fn get_video_hash(&self) -> Option<&str> {
-        match self {
-            Self::Uninitialized => None,
-            Self::Initialized { video_hash } => Some(video_hash),
-        }
+    fn init(&mut self) {
+        *self = Self::Initialized;
     }
 }
 
@@ -122,6 +115,13 @@ impl GlobalState {
 struct PlayerState {
     speed: f64,
     paused: bool,
+    video_hash: Option<String>,
+}
+
+impl PlayerState {
+    fn reset(&mut self) {
+        self.video_hash = None;
+    }
 }
 
 impl Default for PlayerState {
@@ -129,11 +129,15 @@ impl Default for PlayerState {
         Self {
             speed: 1.0,
             paused: false,
+            video_hash: None,
         }
     }
 }
 
-async fn send_message(mut stream: &TcpStream, msg: impl Into<ServerMessage>) -> Result<()> {
+async fn send_message(
+    mut stream: &TcpStream,
+    msg: impl Into<ServerMessage>,
+) -> Result<()> {
     let msg = msg.into();
     let mut payload = serde_json::to_string(&msg).unwrap();
     payload.push('\n');
@@ -173,6 +177,9 @@ async fn process_command(command: Command, state: &mut GlobalState) -> Result<()
             state.connections.remove(&id).with_context(|| {
                 format!("ID: {} doesn't exist in connections.", id)
             })?;
+            if state.connections.is_empty() {
+                state.player.reset()
+            }
         }
         Command::Message(id, ClientMessage::Update(msg)) => match msg {
             ClientUpdate::Timestamp { time } => {
@@ -229,34 +236,41 @@ async fn process_command(command: Command, state: &mut GlobalState) -> Result<()
             }
         },
         Command::Message(id, ClientMessage::Init(msg)) => {
-            let common_hash = state
-                .connections
-                .iter()
-                .filter(|(&con_id, _)| con_id != id)
-                .filter_map(|(_, con)| con.state.get_video_hash())
-                .all(|con_hash| con_hash == msg.video_hash);
-
             let con = state.connections.get_mut(&id).unwrap();
-            if common_hash {
-                con.state.init(msg.video_hash);
-            } else {
-                info!(
-                    "{} ({}) has video hash different \
-                      from other established connections.",
-                    con.peer, id
-                );
+            con.state.init();
 
-                send_message(
-                    &con.stream,
-                    ServerDisconnect::IncorrectHash,
-                )
-                .await?;
+            match &state.player.video_hash {
+                Some(common_hash) if common_hash != &msg.video_hash => {
+                    info!(
+                        "{} ({}) has video hash different \
+                          from other established connections.",
+                        con.peer, id
+                    );
 
-                con.stream.shutdown(Shutdown::Both).with_context(|| {
-                    format!("Forcible shutdown of {} ({}) failed.", con.peer, id)
-                })?;
+                    send_message(&con.stream, ServerDisconnect::IncorrectHash)
+                        .await?;
+
+                    con.stream.shutdown(Shutdown::Both).with_context(|| {
+                        format!("Forcible shutdown of {} ({}) failed.", con.peer, id)
+                    })?;
+                    return Ok(());
+                }
+                None => {
+                    assert_eq!(
+                        state
+                            .connections
+                            .values()
+                            .filter(|c| &c.state == &ConnectionState::Initialized)
+                            .count(),
+                        1
+                    );
+
+                    state.player.video_hash = Some(msg.video_hash);
+                }
+                Some(_) => {}
             }
         }
+
         Command::Synchronize => {
             let min = state.get_min_time();
             let max = state.get_max_time();

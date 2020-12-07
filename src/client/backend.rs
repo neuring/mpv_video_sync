@@ -70,8 +70,10 @@ impl<'a> NetworkListener<'a> {
             let msg = self.receive_next_message().await?;
 
             match msg {
-                ServerMessage::Update(update) => self.network_events.send(update).await?,
-                ServerMessage::Disconnect(ServerDisconnect::IncorrectHash) => { 
+                ServerMessage::Update(update) => {
+                    self.network_events.send(update).await?
+                }
+                ServerMessage::Disconnect(ServerDisconnect::IncorrectHash) => {
                     bail!("Incorrect video file.")
                 }
             }
