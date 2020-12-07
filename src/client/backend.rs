@@ -17,6 +17,7 @@ use video_sync::*;
 
 use crate::{
     mpv::{Mpv, MpvEvent},
+    notification::Notificator,
     Config,
 };
 
@@ -77,27 +78,53 @@ impl<'a> NetworkListener<'a> {
     }
 }
 
-async fn broker_handle_network_event(event: ServerUpdate, mpv: &Mpv) -> Result<()> {
+async fn broker_handle_network_event(
+    event: ServerUpdate,
+    mpv: &Mpv,
+    notificator: &Notificator,
+) -> Result<()> {
     match event {
         ServerUpdate {
             time,
             paused,
             speed,
+            cause,
         } => {
             match (time, paused) {
                 (Some(time), Some(true)) => {
+                    if let UpdateCause::UserAction(user) = &cause {
+                        notificator.notify(format!("{} paused!", user));
+                    }
+
                     mpv.execute_event(MpvEvent::Pause { time }, 1).await?;
                 }
+
                 (Some(time), Some(false)) => {
+                    if let UpdateCause::UserAction(user) = &cause {
+                        notificator.notify(format!("{} resumed!", user));
+                    }
+
                     mpv.execute_event(MpvEvent::Resume { time }, 1).await?;
                 }
+
                 (Some(time), None) => {
+                    if let UpdateCause::Synchronize = &cause {
+                        notificator.notify(format!("Synchronization to {}!", time));
+                    } else if let UpdateCause::UserAction(user) = &cause {
+                        notificator.notify(format!("{} seeked to {}!", user, time));
+                    }
+
                     mpv.execute_event(MpvEvent::Seek { time }, 1).await?;
                 }
                 _ => {}
             }
 
             if let Some(factor) = speed {
+                if let UpdateCause::UserAction(user) = &cause {
+                    notificator
+                        .notify(format!("{} changed speed to {}!", user, factor));
+                }
+
                 mpv.execute_event(MpvEvent::SpeedChange { factor }, 1)
                     .await?;
             }
@@ -145,9 +172,11 @@ async fn broker_loop(
     network_events: Receiver<ServerUpdate>,
     mpv: &Mpv,
     network_stream: &TcpStream,
+    config: Arc<Config>,
 ) -> Result<()> {
     let mut mpv_events = mpv_events.fuse();
     let mut network_events = network_events.fuse();
+    let notificator = Notificator::new(Arc::clone(&config));
 
     // First wait for initial server message to set up mpv player.
     let init_msg = network_events
@@ -159,6 +188,7 @@ async fn broker_loop(
         time: Some(time),
         paused: Some(paused),
         speed: Some(speed),
+        cause: UpdateCause::Init,
     } = init_msg
     {
         mpv.execute_event(MpvEvent::new_paused(paused, time), 10)
@@ -183,8 +213,8 @@ async fn broker_loop(
 
             network_event = network_events.next().fuse() => {
                 if let Some(event) = network_event {
-                    debug!("NETWORK EVENT: {:?}", network_event);
-                    broker_handle_network_event(event, mpv).await?;
+                    debug!("NETWORK EVENT: {:?}", event);
+                    broker_handle_network_event(event, mpv, &notificator).await?;
                 }
             },
 
@@ -249,6 +279,7 @@ pub async fn start_backend(config: Arc<Config>) -> Result<()> {
     send_network_message(
         ClientInit {
             video_hash: config.video_hash.clone(),
+            name: config.username.0.clone(),
         },
         &network_stream,
     )
@@ -270,11 +301,16 @@ pub async fn start_backend(config: Arc<Config>) -> Result<()> {
         .instrument(debug_span!("Network listener loop"))
         .boxed()
         .fuse();
-    let mut broker =
-        broker_loop(mpv_receiver, network_receiver, &mpv, &network_stream)
-            .instrument(debug_span!("Broker loop"))
-            .boxed()
-            .fuse();
+    let mut broker = broker_loop(
+        mpv_receiver,
+        network_receiver,
+        &mpv,
+        &network_stream,
+        Arc::clone(&config),
+    )
+    .instrument(debug_span!("Broker loop"))
+    .boxed()
+    .fuse();
 
     select! {
         x = mpv_listener => {

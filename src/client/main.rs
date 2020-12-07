@@ -12,6 +12,7 @@ use std::{
 use anyhow::{anyhow, Context, Result};
 use async_process::Command;
 use async_std::task;
+use derive_more::{Display, From, FromStr};
 use futures::{
     future::{select, Either},
     FutureExt,
@@ -26,6 +27,7 @@ use tracing_subscriber::EnvFilter;
 
 mod backend;
 mod mpv;
+mod notification;
 
 #[derive(Debug)]
 struct MpvProcessInvocation {
@@ -86,6 +88,23 @@ impl FromStr for MpvSocket {
     }
 }
 
+#[derive(Debug, From, Display, PartialEq, Eq, FromStr)]
+struct Username(String);
+
+impl Default for Username {
+    fn default() -> Self {
+        std::env::var("USER")
+            .ok()
+            .to_owned()
+            .unwrap_or_else(|| {
+                let mut rng = rand::thread_rng();
+                let postfix = rng.gen_range(0, 100000);
+                format!("Anonymous-{:05}", postfix)
+            })
+            .into()
+    }
+}
+
 #[derive(Debug, StructOpt)]
 pub struct Config {
     /// URL of synchronizing server.
@@ -102,6 +121,14 @@ pub struct Config {
     /// mpv command to execute. This can be used to specify a different mpv binary
     /// or add flags.
     mpv_command: MpvProcessInvocation,
+
+    /// Name used to represent your client.
+    #[structopt(long, short = "u", default_value)]
+    username: Username,
+
+    /// Use desktop notifications when changes occur.
+    #[structopt(long, short = "n")]
+    disable_desktop_notify: bool,
 
     #[structopt(skip)]
     video_hash: String,

@@ -48,17 +48,24 @@ struct Connection {
     state: ConnectionState,
 }
 
-// Currently unused, but might be used later on.
 #[derive(Debug, PartialEq, Eq)]
-#[allow(unused)]
 enum ConnectionState {
     Uninitialized,
-    Initialized,
+    Initialized { name: String },
 }
 
 impl ConnectionState {
-    fn init(&mut self) {
-        *self = Self::Initialized;
+    fn init(&mut self, name: String) {
+        assert_eq!(self, &Self::Uninitialized);
+
+        *self = Self::Initialized { name };
+    }
+
+    fn get_name(&self) -> Option<&str> {
+        match self {
+            Self::Uninitialized => None,
+            Self::Initialized { name } => Some(&name),
+        }
     }
 }
 
@@ -160,7 +167,7 @@ async fn process_command(command: Command, state: &mut GlobalState) -> Result<()
                     state: ConnectionState::default(),
                 });
 
-                let msg = ServerUpdate::new()
+                let msg = ServerUpdate::new(UpdateCause::Init)
                     .with_time(min_time)
                     .with_speed(state.player.speed)
                     .with_pause(state.player.paused);
@@ -190,7 +197,12 @@ async fn process_command(command: Command, state: &mut GlobalState) -> Result<()
                 let con = &state.connections[&id];
                 debug!("Received {:?} from {} ({})", msg, con.peer, id);
 
-                let payload = ServerUpdate::new();
+                let name = con.state.get_name().ok_or(anyhow!(
+                    "Received client update \
+                        from uninitialized client. Ignoring..."
+                ))?;
+                let payload =
+                    ServerUpdate::new(UpdateCause::UserAction(name.to_string()));
 
                 let payload = match msg {
                     ClientUpdate::Seek { time } => payload.with_time(time),
@@ -234,7 +246,10 @@ async fn process_command(command: Command, state: &mut GlobalState) -> Result<()
         },
         Command::Message(id, ClientMessage::Init(msg)) => {
             let con = state.connections.get_mut(&id).unwrap();
-            con.state.init();
+
+            debug!("Initializing {} ({}) with {:?}", con.peer, id, &msg.name);
+
+            con.state.init(msg.name);
 
             match &state.player.video_hash {
                 Some(common_hash) if common_hash != &msg.video_hash => {
@@ -257,7 +272,7 @@ async fn process_command(command: Command, state: &mut GlobalState) -> Result<()
                         state
                             .connections
                             .values()
-                            .filter(|c| &c.state == &ConnectionState::Initialized)
+                            .filter(|c| &c.state != &ConnectionState::Uninitialized)
                             .count(),
                         1
                     );
@@ -282,10 +297,11 @@ async fn process_command(command: Command, state: &mut GlobalState) -> Result<()
                         min_con.peer, min_id, min, max_con.peer, max_id, max
                     );
 
-                    let payload = ServerUpdate::new().with_time(min);
+                    let payload =
+                        ServerUpdate::new(UpdateCause::Synchronize).with_time(min);
 
                     for (_, Connection { stream, .. }) in state.connections.iter() {
-                        send_message(&**stream, payload).await?;
+                        send_message(&**stream, payload.clone()).await?;
                     }
                 }
             }

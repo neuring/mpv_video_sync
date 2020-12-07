@@ -10,6 +10,7 @@ pub enum ClientMessage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClientInit {
     pub video_hash: String,
+    pub name: String,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -26,17 +27,28 @@ pub enum ServerDisconnect {
     IncorrectHash,
 }
 
-#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum UpdateCause {
+    UserAction(String), // Name of client responsible.
+    Synchronize,
+    Init,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerUpdate {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub time: Option<f64>,
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub speed: Option<f64>,
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub paused: Option<bool>,
+
+    pub cause: UpdateCause,
 }
 
-#[derive(Debug, Clone, Copy, From, Serialize, Deserialize)]
+#[derive(Debug, Clone, From, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ServerMessage {
     Update(ServerUpdate),
@@ -44,8 +56,13 @@ pub enum ServerMessage {
 }
 
 impl ServerUpdate {
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(cause: UpdateCause) -> Self {
+        Self {
+            time: None,
+            speed: None,
+            paused: None,
+            cause,
+        }
     }
 
     pub fn with_time(mut self, t: f64) -> Self {
