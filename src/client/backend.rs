@@ -197,7 +197,7 @@ async fn broker_loop(
 
 async fn try_ipc_connection(config: &Config) -> Result<UnixStream> {
     let mut attempts = 0;
-    let mut last_err = anyhow!("");
+    let mut last_err: anyhow::Error;
     trace!("Start connecting to {}", &config.ipc_socket);
     let ipc_socket = loop {
         let stream = UnixStream::connect(&config.ipc_socket).await;
@@ -213,7 +213,7 @@ async fn try_ipc_connection(config: &Config) -> Result<UnixStream> {
                     );
                     last_err = e.into();
                 }
-                _ => Err(e)?,
+                _ => return Err(e.into()),
             },
         }
 

@@ -233,7 +233,7 @@ async fn process_command(command: Command, state: &mut GlobalState) -> Result<()
                 .iter()
                 .filter(|(&con_id, _)| con_id != id)
                 .filter_map(|(_, con)| con.state.get_video_hash())
-                .all(|con_hash| con_hash == &msg.video_hash);
+                .all(|con_hash| con_hash == msg.video_hash);
 
             let con = state.connections.get_mut(&id).unwrap();
             if common_hash {

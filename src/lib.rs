@@ -34,6 +34,12 @@ pub enum ServerMessage {
     },
 }
 
+impl Default for ServerMessage {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ServerMessage {
     pub fn new() -> Self {
         Self::Update {
