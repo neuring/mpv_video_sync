@@ -1,3 +1,5 @@
+use std::{fmt::Display, ops::Sub};
+
 use derive_more::From;
 use serde::{Deserialize, Serialize};
 
@@ -15,10 +17,10 @@ pub struct ClientInit {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum ClientUpdate {
-    Timestamp { time: f64 },
-    Seek { time: f64 },
-    Pause { time: f64 },
-    Resume { time: f64 },
+    Timestamp { time: Time },
+    Seek { time: Time },
+    Pause { time: Time },
+    Resume { time: Time },
     SpeedChange { factor: f64 },
 }
 
@@ -37,7 +39,7 @@ pub enum UpdateCause {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerUpdate {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub time: Option<f64>,
+    pub time: Option<Time>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub speed: Option<f64>,
@@ -65,7 +67,7 @@ impl ServerUpdate {
         }
     }
 
-    pub fn with_time(mut self, t: f64) -> Self {
+    pub fn with_time(mut self, t: Time) -> Self {
         match &mut self {
             Self { time, .. } => *time = Some(t),
         }
@@ -84,5 +86,60 @@ impl ServerUpdate {
             Self { speed, .. } => *speed = Some(s),
         }
         self
+    }
+}
+
+/// Struct for storing the time of a played a video.
+/// Used for better formatting.
+/// It cannot store NaN.
+#[derive(Debug, PartialEq, PartialOrd, Clone, Copy, Serialize, Deserialize)]
+pub struct Time {
+    seconds: f64,
+}
+
+impl Time {
+    pub fn from_seconds(seconds: f64) -> Self {
+        if seconds.is_nan() || seconds.is_infinite() {
+            panic!("Time cannot be NaN or Infinite.");
+        }
+        Self { seconds }
+    }
+
+    pub fn zero() -> Self {
+        Self { seconds: 0.0 }
+    }
+
+    pub fn as_seconds(&self) -> f64 {
+        self.seconds
+    }
+}
+
+impl Eq for Time {}
+
+impl Ord for Time {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.seconds
+            .partial_cmp(&other.seconds)
+            .expect("Cannot fail, because time can never store NaN.")
+    }
+}
+
+impl Display for Time {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let total_seconds = self.seconds.floor() as u32;
+
+        let seconds = total_seconds % 60;
+        let minutes = (total_seconds / 60) % 60;
+        let hours = (total_seconds / (60 * 60)) % 60;
+
+        write!(f, "{:02}:{:02}:{:02}", hours, minutes, seconds)
+    }
+}
+
+impl Sub for Time {
+    type Output = f64;
+
+    fn sub(self, rhs: Self) -> Self::Output {
+        self.seconds - rhs.seconds
     }
 }

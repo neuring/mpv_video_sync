@@ -27,12 +27,12 @@ use video_sync::*;
 
 #[derive(Debug, Clone, Copy)]
 struct Timestamp {
-    value: f64,
+    value: Time,
     when: Instant,
 }
 
 impl Timestamp {
-    fn now(value: f64) -> Self {
+    fn now(value: Time) -> Self {
         Self {
             value,
             when: Instant::now(),
@@ -94,22 +94,20 @@ struct GlobalState {
 impl GlobalState {
     // Get the minimum time of all connections and the id of this connection.
     // Returns None if there are no connections.
-    fn get_min_time(&self) -> Option<(Id, f64)> {
+    fn get_min_time(&self) -> Option<(Id, Time)> {
         self.connections
             .iter()
             .filter_map(|(&id, con)| Some((id, con.timestamp?.value)))
-            .filter(|(_, v)| !v.is_nan())
-            .min_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+            .min_by_key(|&(_, a)| a)
     }
 
     // Get the maximum time of all connections and the id of this connection.
     // Returns None if there are no connections.
-    fn get_max_time(&self) -> Option<(Id, f64)> {
+    fn get_max_time(&self) -> Option<(Id, Time)> {
         self.connections
             .iter()
             .filter_map(|(&id, con)| Some((id, con.timestamp?.value)))
-            .filter(|(_, v)| !v.is_nan())
-            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+            .max_by_key(|&(_, a)| a)
     }
 }
 
@@ -155,7 +153,7 @@ async fn send_message(
 async fn process_command(command: Command, state: &mut GlobalState) -> Result<()> {
     match command {
         Command::NewConnection(id, stream) => {
-            let min_time = state.get_min_time().map(|(_, t)| t).unwrap_or(0.0);
+            let min_time = state.get_min_time().map(|(_, t)| t).unwrap_or(Time::zero());
             if let Entry::Vacant(e) = state.connections.entry(id) {
                 let peer =
                     stream.peer_addr().context("Failed to extract peer addr.")?;

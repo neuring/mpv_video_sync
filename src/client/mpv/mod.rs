@@ -17,6 +17,7 @@ use tracing::{debug, info, trace};
 mod ipc_data_model;
 
 use ipc_data_model::*;
+use video_sync::Time;
 
 pub struct Mpv {
     stream: UnixStream,
@@ -72,10 +73,10 @@ struct MpvState {
     expected_responses: HashSet<u64>,
 
     // Events that still require the current time to be send.
-    required_time: Vec<Box<dyn FnOnce(f64) -> MpvEvent + Send + 'static>>,
+    required_time: Vec<Box<dyn FnOnce(Time) -> MpvEvent + Send + 'static>>,
 
     // Senders for request_time method.
-    time_requests: Vec<oneshot::Sender<f64>>,
+    time_requests: Vec<oneshot::Sender<Time>>,
 
     // Senders for execute_event method responses.
     execution_requests: HashMap<u64, oneshot::Sender<ExecutionResponse>>,
@@ -98,14 +99,14 @@ impl Default for MpvState {
 
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum MpvEvent {
-    Pause { time: f64 },
-    Resume { time: f64 },
-    Seek { time: f64 },
+    Pause { time: Time },
+    Resume { time: Time },
+    Seek { time: Time },
     SpeedChange { factor: f64 },
 }
 
 impl MpvEvent {
-    pub fn new_paused(pause: bool, time: f64) -> Self {
+    pub fn new_paused(pause: bool, time: Time ) -> Self {
         if pause {
             Self::Pause { time }
         } else {
@@ -279,6 +280,7 @@ impl Mpv {
 
                 if request_id == TIMER_REQUEST_ID {
                     let time = response.data.as_ref().unwrap().as_f64().unwrap();
+                    let time = Time::from_seconds(time);
 
                     for event in state.required_time.drain(..) {
                         sender.send(event(time)).await?;
@@ -434,7 +436,7 @@ impl Mpv {
 
     async fn execute_seek(
         &self,
-        time: f64,
+        time: Time,
     ) -> Result<impl Future<Output = ExecutionResponse>> {
         let payload = {
             let mut state = self.state.lock().await;
@@ -445,7 +447,7 @@ impl Mpv {
 
             MpvIpcCommand::SetProperty {
                 request_id,
-                property: MpvIpcPropertyValue::TimePos(time),
+                property: MpvIpcPropertyValue::TimePos(time.as_seconds()),
             }
         };
 
@@ -458,7 +460,7 @@ impl Mpv {
         Ok(response)
     }
 
-    pub async fn request_time(&self) -> Result<f64> {
+    pub async fn request_time(&self) -> Result<Time> {
         let (time_sender, time_receiver) = oneshot::channel();
 
         {

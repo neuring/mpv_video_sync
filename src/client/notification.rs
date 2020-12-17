@@ -17,8 +17,8 @@ impl Notificator {
         let path = std::path::PathBuf::from(NOTIFY_SEND_PATH);
         let desktop_notifications_possible = path.exists();
 
-        Self { 
-            config ,
+        Self {
+            config,
             desktop_notifications_possible,
         }
     }
@@ -28,12 +28,13 @@ impl Notificator {
 
         println!("{}", msg);
 
-        if self.desktop_notifications_possible && !self.config.disable_desktop_notify {
+        if self.desktop_notifications_possible && !self.config.disable_desktop_notify
+        {
             let res = Command::new(NOTIFY_SEND_PATH)
-                    .arg(msg)
-                    .stdin(Stdio::null())
-                    .stdout(Stdio::null())
-                    .spawn();
+                .arg(msg)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .spawn();
             if let Err(e) = res {
                 warn!("notify-send invocation failed: {:?}", e)
             }
