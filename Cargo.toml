@@ -1,6 +1,6 @@
 [package]
 name = "video_sync"
-version = "0.1.4"
+version = "0.1.5"
 authors = ["neuring <neuring@pm.me>"]
 edition = "2018"
 
@@ -21,6 +21,7 @@ async-std = "1.8.0"
 derive_more = "0.99.11"
 futures = "0.3.8"
 hex = "0.4.2"
+itertools = "0.10.0"
 memmap = "0.7.0"
 rand = "0.7.3"
 serde = { version = "1.0.118", features = ["derive"] }

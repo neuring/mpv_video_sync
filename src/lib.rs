@@ -33,11 +33,10 @@ pub enum ServerDisconnect {
 pub enum UpdateCause {
     UserAction(String), // Name of client responsible.
     Synchronize,
-    Init,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ServerUpdate {
+pub struct PlayerState {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub time: Option<Time>,
 
@@ -46,45 +45,62 @@ pub struct ServerUpdate {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub paused: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlayerUpdate {
+    pub state: PlayerState,
 
     pub cause: UpdateCause,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum UserUpdate {
+    Connected(String),
+    Disconnected(String),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServerInit {
+    pub player_state: PlayerState,
+
+    pub users: Vec<String>,
+}
+
+
 #[derive(Debug, Clone, From, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ServerMessage {
-    Update(ServerUpdate),
+    Init(ServerInit),
+    UserUpdate(UserUpdate),
+    PlayerUpdate(PlayerUpdate),
     Disconnect(ServerDisconnect),
 }
 
-impl ServerUpdate {
+impl PlayerUpdate {
     pub fn new(cause: UpdateCause) -> Self {
         Self {
-            time: None,
-            speed: None,
-            paused: None,
+            state: PlayerState {
+                time: None,
+                speed: None,
+                paused: None,
+            },
             cause,
         }
     }
 
     pub fn with_time(mut self, t: Time) -> Self {
-        match &mut self {
-            Self { time, .. } => *time = Some(t),
-        }
+        self.state.time = Some(t);
         self
     }
 
     pub fn with_pause(mut self, p: bool) -> Self {
-        match &mut self {
-            Self { paused, .. } => *paused = Some(p),
-        }
+        self.state.paused = Some(p);
         self
     }
 
     pub fn with_speed(mut self, s: f64) -> Self {
-        match &mut self {
-            Self { speed, .. } => *speed = Some(s),
-        }
+        self.state.speed = Some(s);
         self
     }
 }

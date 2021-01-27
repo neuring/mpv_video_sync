@@ -109,6 +109,16 @@ impl GlobalState {
             .filter_map(|(&id, con)| Some((id, con.timestamp?.value)))
             .max_by_key(|&(_, a)| a)
     }
+
+    // Collects a list of all initialised usernames.
+    fn get_all_usernames(&self) -> Vec<String> {
+        self.connections.values().filter_map(|c| match &c.state {
+            ConnectionState::Uninitialized => None,
+            ConnectionState::Initialized { name } => Some(name),
+        })
+        .cloned()
+        .collect()
+    }
 }
 
 /// Expected state of all client mpv players.
@@ -154,6 +164,8 @@ async fn process_command(command: Command, state: &mut GlobalState) -> Result<()
     match command {
         Command::NewConnection(id, stream) => {
             let min_time = state.get_min_time().map(|(_, t)| t).unwrap_or(Time::zero());
+            let users = state.get_all_usernames();
+
             if let Entry::Vacant(e) = state.connections.entry(id) {
                 let peer =
                     stream.peer_addr().context("Failed to extract peer addr.")?;
@@ -165,10 +177,16 @@ async fn process_command(command: Command, state: &mut GlobalState) -> Result<()
                     state: ConnectionState::default(),
                 });
 
-                let msg = ServerUpdate::new(UpdateCause::Init)
-                    .with_time(min_time)
-                    .with_speed(state.player.speed)
-                    .with_pause(state.player.paused);
+                let player_state = video_sync::PlayerState {
+                    time: Some(min_time),
+                    speed: Some(state.player.speed),
+                    paused: Some(state.player.paused),
+                };
+
+                let msg = ServerInit {
+                    player_state,
+                    users,
+                };
 
                 send_message(connection.stream.as_ref(), msg).await?;
             } else {
@@ -176,11 +194,21 @@ async fn process_command(command: Command, state: &mut GlobalState) -> Result<()
             }
         }
         Command::Disconnection(id) => {
-            state.connections.remove(&id).with_context(|| {
+            let removed = state.connections.remove(&id).with_context(|| {
                 format!("ID: {} doesn't exist in connections.", id)
             })?;
+
             if state.connections.is_empty() {
+
                 state.player.reset()
+
+            } else if let ConnectionState::Initialized{ name } = removed.state {
+
+                let msg = ServerMessage::UserUpdate(UserUpdate::Disconnected(name));
+
+                for con in state.connections.values() {
+                    send_message(con.stream.as_ref(), msg.clone()).await?;
+                }
             }
         }
         Command::Message(id, ClientMessage::Update(msg)) => match msg {
@@ -200,7 +228,7 @@ async fn process_command(command: Command, state: &mut GlobalState) -> Result<()
                         from uninitialized client. Ignoring..."
                 ))?;
                 let payload =
-                    ServerUpdate::new(UpdateCause::UserAction(name.to_string()));
+                    PlayerUpdate::new(UpdateCause::UserAction(name.to_string()));
 
                 let payload = match msg {
                     ClientUpdate::Seek { time } => payload.with_time(time),
@@ -247,7 +275,7 @@ async fn process_command(command: Command, state: &mut GlobalState) -> Result<()
 
             debug!("Initializing {} ({}) with {:?}", con.peer, id, &msg.name);
 
-            con.state.init(msg.name);
+            con.state.init(msg.name.clone());
 
             match &state.player.video_hash {
                 Some(common_hash) if common_hash != &msg.video_hash => {
@@ -279,6 +307,14 @@ async fn process_command(command: Command, state: &mut GlobalState) -> Result<()
                 }
                 Some(_) => {}
             }
+
+            let msg = ServerMessage::UserUpdate(UserUpdate::Connected(msg.name));
+            for (&con_id, con) in state.connections.iter() {
+                if id == con_id {
+                    continue
+                }
+                send_message(con.stream.as_ref(), msg.clone()).await?;
+            }
         }
 
         Command::Synchronize => {
@@ -296,7 +332,7 @@ async fn process_command(command: Command, state: &mut GlobalState) -> Result<()
                     );
 
                     let payload =
-                        ServerUpdate::new(UpdateCause::Synchronize).with_time(min);
+                        PlayerUpdate::new(UpdateCause::Synchronize).with_time(min);
 
                     for (_, Connection { stream, .. }) in state.connections.iter() {
                         send_message(&**stream, payload.clone()).await?;

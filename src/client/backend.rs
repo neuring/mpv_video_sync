@@ -1,4 +1,4 @@
-use std::{io::ErrorKind, sync::Arc, time::Duration};
+use std::{io::ErrorKind, iter, sync::Arc, time::Duration};
 
 use anyhow::{anyhow, bail, Context, Result};
 use async_std::{
@@ -11,6 +11,7 @@ use futures::{
     },
     select, FutureExt, SinkExt,
 };
+use itertools::Itertools;
 use tracing::{debug, debug_span, trace};
 use tracing_futures::Instrument;
 use video_sync::*;
@@ -24,11 +25,11 @@ use crate::{
 struct NetworkListener<'stream> {
     stream: BufReader<&'stream TcpStream>,
     buffer: String,
-    network_events: Sender<ServerUpdate>,
+    network_events: Sender<ServerMessage>,
 }
 
 impl<'a> NetworkListener<'a> {
-    fn new(stream: &'a TcpStream, events: Sender<ServerUpdate>) -> Self {
+    fn new(stream: &'a TcpStream, events: Sender<ServerMessage>) -> Self {
         Self {
             stream: BufReader::new(stream),
             network_events: events,
@@ -66,30 +67,34 @@ impl<'a> NetworkListener<'a> {
         loop {
             let msg = self.receive_next_message().await?;
 
-            match msg {
-                ServerMessage::Update(update) => {
-                    self.network_events.send(update).await?
-                }
-                ServerMessage::Disconnect(ServerDisconnect::IncorrectHash) => {
-                    bail!("Incorrect video file.")
-                }
-            }
+            self.network_events.send(msg).await?;
         }
     }
 }
 
 async fn broker_handle_network_event(
-    event: ServerUpdate,
+    event: ServerMessage,
     mpv: &Mpv,
     notificator: &Notificator,
 ) -> Result<()> {
     match event {
-        ServerUpdate {
-            time,
-            paused,
-            speed,
+        ServerMessage::UserUpdate(update) => match update {
+            UserUpdate::Connected(user) => {
+                notificator.notify(format!("{} has connected!", user))
+            }
+            UserUpdate::Disconnected(user) => {
+                notificator.notify(format!("{} has disconnected!", user))
+            }
+        },
+        ServerMessage::PlayerUpdate(PlayerUpdate {
+            state:
+                PlayerState {
+                    time,
+                    paused,
+                    speed,
+                },
             cause,
-        } => {
+        }) => {
             match (time, paused) {
                 (Some(time), Some(true)) => {
                     if let UpdateCause::UserAction(user) = &cause {
@@ -129,6 +134,10 @@ async fn broker_handle_network_event(
                     .await?;
             }
         }
+        ServerMessage::Disconnect(reason) => match reason {
+            ServerDisconnect::IncorrectHash => bail!("Incorrect video file."),
+        },
+        ServerMessage::Init(_) => bail!("Server broke protocol by re-initialising."),
     }
     Ok(())
 }
@@ -169,7 +178,7 @@ async fn broker_handle_mpv_event(
 
 async fn broker_loop(
     mpv_events: Receiver<MpvEvent>,
-    network_events: Receiver<ServerUpdate>,
+    network_events: Receiver<ServerMessage>,
     mpv: &Mpv,
     network_stream: &TcpStream,
     config: Arc<Config>,
@@ -184,17 +193,31 @@ async fn broker_loop(
         .await
         .context("Didn't receive init server message")?;
 
-    if let ServerUpdate {
-        time: Some(time),
-        paused: Some(paused),
-        speed: Some(speed),
-        cause: UpdateCause::Init,
-    } = init_msg
+    if let ServerMessage::Init(ServerInit {
+        player_state:
+            PlayerState {
+                time: Some(time),
+                paused: Some(paused),
+                speed: Some(speed),
+            },
+        users,
+    }) = init_msg
     {
         mpv.execute_event(MpvEvent::new_paused(paused, time), 10)
             .await?;
         mpv.execute_event(MpvEvent::SpeedChange { factor: speed }, 1)
             .await?;
+
+        if users.is_empty() {
+            notificator.notify("Connected to server, no other users connected.");
+        } else {
+            let users = users
+                .iter()
+                .map(|user| user.as_str())
+                .interleave_shortest(iter::repeat(", "))
+                .collect::<String>();
+            notificator.notify(format!("Connected to server with {}", users));
+        }
     } else {
         bail!("Invalid initial server message: {:?}", init_msg);
     }
