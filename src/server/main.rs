@@ -2,7 +2,7 @@ use std::{
     collections::{hash_map::Entry, HashMap},
     net::{Shutdown, SocketAddr},
     sync::Arc,
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -21,22 +21,20 @@ use futures::{
     SinkExt, StreamExt,
 };
 use structopt::StructOpt;
-use tracing::{debug, info, info_span, warn, Instrument};
+use tracing::{
+    debug, info, info_span, level_filters::LevelFilter, warn, Instrument,
+};
 use tracing_subscriber::filter::EnvFilter;
 use video_sync::*;
 
 #[derive(Debug, Clone, Copy)]
 struct Timestamp {
     value: Time,
-    when: Instant,
 }
 
 impl Timestamp {
     fn now(value: Time) -> Self {
-        Self {
-            value,
-            when: Instant::now(),
-        }
+        Self { value }
     }
 }
 
@@ -88,6 +86,7 @@ enum Command {
 #[derive(Debug, Default)]
 struct GlobalState {
     connections: HashMap<Id, Connection>,
+    // expected video player state
     player: PlayerState,
 }
 
@@ -277,8 +276,12 @@ async fn process_command(command: Command, state: &mut GlobalState) -> Result<()
 
             con.state.init(msg.name.clone());
 
+            let Some(clients_video_hash) = msg.video_hash else {
+                return Ok(());
+            };
+
             match &state.player.video_hash {
-                Some(common_hash) if common_hash != &msg.video_hash => {
+                Some(common_hash) if common_hash != &clients_video_hash => {
                     info!(
                         "{} ({}) has video hash different \
                           from other established connections.",
@@ -294,16 +297,7 @@ async fn process_command(command: Command, state: &mut GlobalState) -> Result<()
                     return Ok(());
                 }
                 None => {
-                    assert_eq!(
-                        state
-                            .connections
-                            .values()
-                            .filter(|c| &c.state != &ConnectionState::Uninitialized)
-                            .count(),
-                        1
-                    );
-
-                    state.player.video_hash = Some(msg.video_hash);
+                    state.player.video_hash = Some(clients_video_hash);
                 }
                 Some(_) => {}
             }
@@ -409,13 +403,18 @@ struct Config {
 }
 
 async fn run() -> Result<()> {
-    let subscriber = tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env())
+    let collector = tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::builder()
+                .with_default_directive(LevelFilter::INFO.into())
+                .from_env_lossy(),
+        )
         .finish();
-    tracing::subscriber::set_global_default(subscriber)
-        .expect("Installing subscriber failed");
+    tracing::subscriber::set_global_default(collector).unwrap();
 
     let config: Config = StructOpt::from_args();
+
+    info!("Starting server at {}", config.address);
 
     let tcp = TcpListener::bind(&config.address).await?;
     let (command_sender, command_receiver) = mpsc::unbounded();

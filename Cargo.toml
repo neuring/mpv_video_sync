@@ -2,7 +2,7 @@
 name = "video_sync"
 version = "0.1.5"
 authors = ["neuring <neuring@pm.me>"]
-edition = "2018"
+edition = "2021"
 
 [[bin]]
 name = "mpv_sync_client"

@@ -11,7 +11,7 @@ pub enum ClientMessage {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClientInit {
-    pub video_hash: String,
+    pub video_hash: Option<String>,
     pub name: String,
 }
 
@@ -67,7 +67,6 @@ pub struct ServerInit {
     pub users: Vec<String>,
 }
 
-
 #[derive(Debug, Clone, From, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ServerMessage {
@@ -107,7 +106,7 @@ impl PlayerUpdate {
 
 /// Struct for storing the time of a played a video.
 /// Used for better formatting.
-/// It cannot store NaN.
+/// It may not store NaN.
 #[derive(Debug, PartialEq, PartialOrd, Clone, Copy, Serialize, Deserialize)]
 pub struct Time {
     seconds: f64,

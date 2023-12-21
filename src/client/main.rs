@@ -22,7 +22,7 @@ use memmap::MmapOptions;
 use rand::Rng;
 use sha2::{Digest, Sha256};
 use structopt::StructOpt;
-use tracing::debug;
+use tracing::{debug, info, level_filters::LevelFilter};
 use tracing_subscriber::EnvFilter;
 
 mod backend;
@@ -130,8 +130,13 @@ pub struct Config {
     #[structopt(long, short = "n")]
     disable_desktop_notify: bool,
 
+    /// Skip hashing video file. This hash is used to ensure everybody is watching the same video.
+    /// However, it can significantly slow the startup time.
+    #[structopt(long)]
+    skip_hash: bool,
+
     #[structopt(skip)]
-    video_hash: String,
+    video_hash: Option<String>,
 }
 
 fn calculate_file_hash(path: impl AsRef<Path>) -> Result<String> {
@@ -154,17 +159,28 @@ fn calculate_file_hash(path: impl AsRef<Path>) -> Result<String> {
 
 fn main() -> Result<()> {
     let collector = tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env())
+        .with_env_filter(
+            EnvFilter::builder()
+                .with_default_directive(LevelFilter::INFO.into())
+                .from_env_lossy(),
+        )
         .finish();
     tracing::subscriber::set_global_default(collector).unwrap();
 
     // Construct Config
     let mut config = Config::from_args();
 
-    let hash = calculate_file_hash(&config.video_path)
-        .context("Couldn't calculate hash of video.")?;
+    if config.skip_hash {
+        info!("Skipping video hash calculation.");
+        config.video_hash = None;
+    } else {
+        info!("Calculating video hash. This may take a few seconds...");
+        let hash = calculate_file_hash(&config.video_path)
+            .context("Couldn't calculate hash of video.")?;
 
-    config.video_hash = hash;
+        config.video_hash = Some(hash);
+        info!("Finished calculating video hash.")
+    }
 
     // Start MPV
     let mut command = Command::new(&config.mpv_command.command);
