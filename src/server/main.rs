@@ -22,7 +22,7 @@ use futures::{
 };
 use structopt::StructOpt;
 use tracing::{debug, info, info_span, warn, Instrument};
-use tracing_subscriber::EnvFilter;
+use tracing_subscriber::filter::EnvFilter;
 use video_sync::*;
 
 #[derive(Debug, Clone, Copy)]
@@ -112,12 +112,14 @@ impl GlobalState {
 
     // Collects a list of all initialised usernames.
     fn get_all_usernames(&self) -> Vec<String> {
-        self.connections.values().filter_map(|c| match &c.state {
-            ConnectionState::Uninitialized => None,
-            ConnectionState::Initialized { name } => Some(name),
-        })
-        .cloned()
-        .collect()
+        self.connections
+            .values()
+            .filter_map(|c| match &c.state {
+                ConnectionState::Uninitialized => None,
+                ConnectionState::Initialized { name } => Some(name),
+            })
+            .cloned()
+            .collect()
     }
 }
 
@@ -163,7 +165,8 @@ async fn send_message(
 async fn process_command(command: Command, state: &mut GlobalState) -> Result<()> {
     match command {
         Command::NewConnection(id, stream) => {
-            let min_time = state.get_min_time().map(|(_, t)| t).unwrap_or(Time::zero());
+            let min_time =
+                state.get_min_time().map(|(_, t)| t).unwrap_or(Time::zero());
             let users = state.get_all_usernames();
 
             if let Entry::Vacant(e) = state.connections.entry(id) {
@@ -199,11 +202,8 @@ async fn process_command(command: Command, state: &mut GlobalState) -> Result<()
             })?;
 
             if state.connections.is_empty() {
-
                 state.player.reset()
-
-            } else if let ConnectionState::Initialized{ name } = removed.state {
-
+            } else if let ConnectionState::Initialized { name } = removed.state {
                 let msg = ServerMessage::UserUpdate(UserUpdate::Disconnected(name));
 
                 for con in state.connections.values() {
@@ -311,7 +311,7 @@ async fn process_command(command: Command, state: &mut GlobalState) -> Result<()
             let msg = ServerMessage::UserUpdate(UserUpdate::Connected(msg.name));
             for (&con_id, con) in state.connections.iter() {
                 if id == con_id {
-                    continue
+                    continue;
                 }
                 send_message(con.stream.as_ref(), msg.clone()).await?;
             }
